@@ -563,7 +563,8 @@
           <resolution>0.01</resolution>
         </range>
       </ray>
-      <plugin name='center_laser' filename='libgazebo_ros_block_laser.so'>
+      <!-- <plugin name='center_laser' filename='libgazebo_ros_block_laser.so'> -->
+      <plugin name='center_laser' filename='libgazebo_ros_laser.so'>
         <topicName>/prius/center_laser/scan</topicName>
         <frameName>center_laser_link</frameName>
       </plugin>

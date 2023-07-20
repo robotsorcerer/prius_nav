@@ -1,2 +1,5 @@
 # Ignore VIM files
 .*.sw?
+
+__pycache__
+**/*.pyc
