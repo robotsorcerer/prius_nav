@@ -54,7 +54,9 @@ def ros_pointcloud2_to_pcl(msg: PointCloud2) -> pcl.PointCloud:
 class SceneParser():
     def __init__(self, rate, verbose=False, data_collect=False):
         super(SceneParser, self).__init__()
-
+        """
+        Add docstring here.
+        """
         self.first_log = True  # for debugging
         self.loaded_data = False
 
@@ -91,13 +93,19 @@ class SceneParser():
 
         self.laser_projector = lg.LaserProjection()
 
-    def image_subscribers(self):
+    def image_subscribers(self):        
+        """
+        Add docstring here.
+        """
         return [
             Subscriber(rf"{self.basetopic}/{loc}{self.suffix_cam_topic}", Image)
             for loc in ['front', 'back', 'left', 'right']
         ]
 
-    def scan_subs(self):
+    def scan_subs(self):        
+        """
+        Add docstring here.
+        """
         laser_scans = [
             Subscriber(rf"{self.basetopic}/front_{loc}{self.suffix_laser_topic}", LaserScan)
             for loc in ['left', 'right']
@@ -105,7 +113,10 @@ class SceneParser():
         center_scan_sub = Subscriber(rf"{self.basetopic}/center{self.suffix_laser_topic}", LaserScan)
         return laser_scans + [center_scan_sub]
 
-    def subscribers(self):
+    def subscribers(self):        
+        """
+        Add docstring here.
+        """
         cam_subs = self.image_subscribers()
         laser_subs = self.scan_subs()
 
@@ -143,6 +154,7 @@ class SceneParser():
         self.msg_data['center_laser'] = center_cloud
         self.loaded_data = True
 
+        "delete what comes below?"
         # frontleft_cloud_pcl = ros_pointcloud2_to_pcl(frontleft_cloud)
         # frontright_cloud_pcl = ros_pointcloud2_to_pcl(frontright_cloud)
         # center_cloud_pcl = ros_pointcloud2_to_pcl(center_cloud)
@@ -159,7 +171,7 @@ if __name__ == "__main__":
     rospy.init_node("estimator_node", anonymous=True, disable_signals=True)
     scene_parser = SceneParser(30, verbose=True)
 
-    # collect some wrenches and 0plot
+    # collect some wrenches and 0plot:: we are not doing any wrenches anymore, no?
     try:
         while not rospy.is_shutdown():
             scene_parser.subscribers()
