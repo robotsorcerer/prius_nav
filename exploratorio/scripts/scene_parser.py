@@ -30,7 +30,7 @@ from rospy.rostime import Duration
 # from gazebo_msgs.srv import GetJointProperties, GetJointPropertiesResponse
 
 from tf.transformations import euler_from_quaternion
-sys.path.append( os.path.dirname( os.path.dirname( os.path.abspath(__file__) ) ) )
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # from scripts.wrench_viz import WrenchVisualizer
 
 rospack = rospkg.RosPack()
@@ -110,7 +110,7 @@ class SceneParser():
             Subscriber(rf"{self.basetopic}/front_{loc}{self.suffix_laser_topic}", LaserScan)
             for loc in ['left', 'right']
         ]
-        center_scan_sub = Subscriber(rf"{self.basetopic}/center{self.suffix_laser_topic}", LaserScan)
+        center_scan_sub = Subscriber(f"{self.basetopic}/center{self.suffix_laser_topic}", LaserScan)
         return laser_scans + [center_scan_sub]
 
     def subscribers(self):        

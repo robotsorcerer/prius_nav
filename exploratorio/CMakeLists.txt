@@ -162,6 +162,8 @@ include_directories(
 catkin_install_python(PROGRAMS
     scripts/scene_parser.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    scripts/online_dataset.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     test/test_scene_parser.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
