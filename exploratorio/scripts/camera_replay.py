@@ -126,6 +126,7 @@ class CameraReplay(SceneParser):
 
     def cb(self, *subscribers):
         super().cb(*subscribers)
+        rospy.loginfo("Calling back")
         for camera in CAMERA_SOURCES:
             image = self.msg_data[camera]
             data = image_to_numpy(image)
