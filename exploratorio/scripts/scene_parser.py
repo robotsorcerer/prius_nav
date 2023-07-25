@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 
-__all__ = ["SubscribeRegress"]
-
 import os
 import sys
-import time
 import rospy
 import laser_geometry.laser_geometry as lg
 import pcl
-import sensor_msgs
 import logging
-import pickle
 import rospkg
-import threading
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 from sensor_msgs.msg import Image, LaserScan, PointCloud2
-from message_filters import TimeSynchronizer, Subscriber, ApproximateTimeSynchronizer
+from message_filters import Subscriber, ApproximateTimeSynchronizer
+from typing import List
 # from geometry_msgs.msg import WrenchStamped
 
 # Necessary to resolve deprecation issue with np aliases
@@ -25,11 +18,9 @@ from message_filters import TimeSynchronizer, Subscriber, ApproximateTimeSynchro
 np.float = float
 import ros_numpy
 
+from enum import IntFlag, auto
 from rospy.rostime import Duration
-# from gazebo_msgs.srv import GetLinkState, GetLinkStateResponse
-# from gazebo_msgs.srv import GetJointProperties, GetJointPropertiesResponse
 
-from tf.transformations import euler_from_quaternion
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # from scripts.wrench_viz import WrenchVisualizer
 
@@ -40,10 +31,11 @@ rospack = rospkg.RosPack()
 
 LOGGER = logging.getLogger(__name__)
 
-def image_to_numpy(img: Image) -> np.ndarray:
-    return np.frombuffer(img.data, dtype=np.uint8)
 
 def ros_pointcloud2_to_pcl(msg: PointCloud2) -> pcl.PointCloud:
+    """
+    Converts a `sensor_msgs.msg.PointCloud2` message into a `PointCloud` pcl object.
+    """
     msg = ros_numpy.numpify(msg)
     points = np.zeros((msg.shape[0], 3))
     points[:, 0] = msg['x']
@@ -51,12 +43,41 @@ def ros_pointcloud2_to_pcl(msg: PointCloud2) -> pcl.PointCloud:
     points[:, 2] = msg['z']
     return pcl.PointCloud(points.astype(np.float32))
 
+class SensorSource(IntFlag):
+    """
+    This enum represents the different sensors that we will collect data from.
+    These values will be used as keys to disambiguate the sources of data in
+    the `SceneParser`.
+    """
+    FRONT_CAMERA = auto()
+    BACK_CAMERA = auto()
+    LEFT_CAMERA = auto()
+    RIGHT_CAMERA = auto()
+    ALL_CAMERAS = FRONT_CAMERA | BACK_CAMERA | LEFT_CAMERA | RIGHT_CAMERA
+
+    FRONT_LEFT_LASER = auto()
+    FRONT_RIGHT_LASER = auto()
+    CENTER_LASER = auto()
+    ALL_LASERS = FRONT_LEFT_LASER | FRONT_RIGHT_LASER | CENTER_LASER
+
+    ALL_SENSORS = ALL_CAMERAS | ALL_LASERS
+
 class SceneParser():
+    """
+    This ROS node collects data from various sensors in the prius robot.
+
+    It subscribes to /prius/{front,back,left,right}_camera/image_raw to
+    collect image data, and subscribes to /prius/{front_left,front_right,center}_laser/scan
+    for laser scan data. Upon receiving data from these topics, the data is
+    stored in `msg_data[sensor_enum]` where `sensor_enum` is `SensorSource` value
+    corresponding to the relevant sensor.
+    """
+
     def __init__(self, rate, verbose=False, data_collect=False):
+        """
+        rate: integer, not currently used
+        """
         super(SceneParser, self).__init__()
-        """
-        Add docstring here.
-        """
         self.first_log = True  # for debugging
         self.loaded_data = False
 
@@ -67,44 +88,28 @@ class SceneParser():
         self.subNameImageLeft = self.basetopic + "/left" + self.suffix_cam_topic
         self.topics = []
 
-        camera_keys = [f"{loc}_camera" for loc in ['front', 'back', 'left', 'right']]
-        laser_keys = [f"{loc}_laser" for loc in ['front_left', 'front_right', 'center']]
+        self.msg_data = {key: None for key in SensorSource if not key.name.startswith("ALL")}
 
-        self.msg_data = {key: None for key in camera_keys + laser_keys}
-
-        self.gravity_vec = np.array(([[0, 0, -9.8]])).T
-
-        # if do_plot:
-        #     fig = plt.figure(figsize=(16, 9))
-        #     gs = gridspec.GridSpec(1, 1, figure=fig)
-        #     plt.ion()
-
-        #     # self.viz = WrenchVisualizer(fig, gs[0], pause_time=1e-4, labels=['Wrench: force, torque']
-        #     # 								_fontdict=fontdict)
-
-        # for data collection
-        self.data_collect_mode = data_collect
-        # if self.data_collect_mode:
-        # 	joints = {"wrench_s": np.zeros((6,1)), "wrench_u":np.zeros((6,1)), "wrench_p": np.zeros((6,1)),
-        # 		  "wrench_piston_butt": np.zeros((6,1))}
-        # 	self.wrenches = {f"chain{i+1}":joints for i in range(6)}
-        # 	self.data_collect_mode = data_collect
-        # 	self.counter = 0
-
+        """
+        This is required in order to translate a ROS LaserScan msg into a
+        pcl PointCloud2 object.
+        """
         self.laser_projector = lg.LaserProjection()
 
-    def image_subscribers(self):        
+    def image_subscribers(self) -> List[str]:
         """
-        Add docstring here.
+        Returns the list of raw image topics to subscribe to.
+        We subscribe to the raw images from all camera topics.
         """
         return [
             Subscriber(rf"{self.basetopic}/{loc}{self.suffix_cam_topic}", Image)
             for loc in ['front', 'back', 'left', 'right']
         ]
 
-    def scan_subs(self):        
+    def scan_subs(self) -> List[str]:
         """
-        Add docstring here.
+        Returns the list of laser topics to subscribe to.
+        We subscribe to the laser scans from all lasers.
         """
         laser_scans = [
             Subscriber(rf"{self.basetopic}/front_{loc}{self.suffix_laser_topic}", LaserScan)
@@ -113,9 +118,14 @@ class SceneParser():
         center_scan_sub = Subscriber(f"{self.basetopic}/center{self.suffix_laser_topic}", LaserScan)
         return laser_scans + [center_scan_sub]
 
-    def subscribers(self):        
+    def subscribers(self):
         """
-        Add docstring here.
+        Instantiates the Subscribers for the topics of interest, registers
+        the callback, and spins ROS.
+
+        Since we are collecting data from a multitude of sensors, we collect all
+        subscribers in a ApproximateTimeSynchronizer message filter, so we will
+        approximately line up sensor data in time.
         """
         cam_subs = self.image_subscribers()
         laser_subs = self.scan_subs()
@@ -128,14 +138,16 @@ class SceneParser():
 
     def cb(self, *subscribers):
         """
-        In order:
-            front_camera
-            back_camera
-            left_camera
-            right_camera
-            front_left_laser
-            front_right_laser
-            center_laser
+        The callback invoked upon receiving sensor data.
+        `subscribers` is a list of messages received from the sensors.
+        In order, subscribers contains messages for:
+            FRONT_CAMERA
+            BACK_CAMERA
+            LEFT_CAMERA
+            RIGHT_CAMERA
+            FRONT_LEFT_LASER
+            FRONT_RIGHT_LASER
+            CENTER_LASER
         """
         front_camera, back_camera, left_camera, right_camera = subscribers[:4]
         frontleft_laser, frontright_laser, center_laser = subscribers[4:]
@@ -144,27 +156,15 @@ class SceneParser():
         frontright_cloud = self.laser_projector.projectLaser(frontright_laser)
         center_cloud = self.laser_projector.projectLaser(center_laser)
 
-        self.msg_data['front_camera'] = front_camera
-        self.msg_data['back_camera'] = back_camera
-        self.msg_data['left_camera'] = left_camera
-        self.msg_data['right_camera'] = right_camera
+        self.msg_data[SensorSource.FRONT_CAMERA] = front_camera
+        self.msg_data[SensorSource.BACK_CAMERA] = back_camera
+        self.msg_data[SensorSource.LEFT_CAMERA] = left_camera
+        self.msg_data[SensorSource.RIGHT_CAMERA] = right_camera
 
-        self.msg_data['front_left_laser'] = frontleft_cloud
-        self.msg_data['front_right_laser'] = frontright_cloud
-        self.msg_data['center_laser'] = center_cloud
+        self.msg_data[SensorSource.FRONT_LEFT_LASER] = frontleft_cloud
+        self.msg_data[SensorSource.FRONT_RIGHT_LASER] = frontright_cloud
+        self.msg_data[SensorSource.CENTER_LASER] = center_cloud
         self.loaded_data = True
-
-        "delete what comes below?"
-        # frontleft_cloud_pcl = ros_pointcloud2_to_pcl(frontleft_cloud)
-        # frontright_cloud_pcl = ros_pointcloud2_to_pcl(frontright_cloud)
-        # center_cloud_pcl = ros_pointcloud2_to_pcl(center_cloud)
-
-        # start = rospy.get_rostime().to_sec()
-        # print(front_camera)
-        # "process the intermediary twelve wrenches"
-        # piston prismatic joints:: parent: cylinder, child: shaft
-        # self.params["chain1"]["wrench_p"] = self.gather_wrench(p1_prism.wrench)
-        # self.params["chain2"]["wrench_p"] = self.gather_wrench(p2_prism.wrench)
 
 
 if __name__ == "__main__":

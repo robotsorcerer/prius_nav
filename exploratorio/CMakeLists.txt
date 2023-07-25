@@ -164,6 +164,8 @@ catkin_install_python(PROGRAMS
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/online_dataset.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    scripts/camera_replay.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     test/test_scene_parser.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
