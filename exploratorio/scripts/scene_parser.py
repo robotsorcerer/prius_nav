@@ -8,7 +8,7 @@ import pcl
 import logging
 import rospkg
 import numpy as np
-from sensor_msgs.msg import Image, LaserScan, PointCloud2
+from sensor_msgs.msg import CameraInfo, Image, CompressedImage, LaserScan, PointCloud2
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 from typing import List
 # from geometry_msgs.msg import WrenchStamped
@@ -73,7 +73,7 @@ class SceneParser():
     corresponding to the relevant sensor.
     """
 
-    def __init__(self, rate, verbose=False, data_collect=False):
+    def __init__(self, rate, compressed_imgs=True, verbose=False, data_collect=False):
         """
         rate: integer, not currently used
         """
@@ -83,12 +83,13 @@ class SceneParser():
 
         self.verbose = verbose
         self.basetopic = "/prius"
-        self.suffix_cam_topic = "_camera/image_raw"
+        self.suffix_cam_topic = "_camera/image_raw/compressed"
         self.suffix_laser_topic = "_laser/scan"
-        self.subNameImageLeft = self.basetopic + "/left" + self.suffix_cam_topic
         self.topics = []
 
         self.msg_data = {key: None for key in SensorSource if not key.name.startswith("ALL")}
+        self.sensor_info = {key: None for key in SensorSource if not key.name.startswith("ALL")}
+        self.compressed_imgs = compressed_imgs
 
         """
         This is required in order to translate a ROS LaserScan msg into a
@@ -101,8 +102,9 @@ class SceneParser():
         Returns the list of raw image topics to subscribe to.
         We subscribe to the raw images from all camera topics.
         """
+        img_topic_msg_type = CompressedImage if self.compressed_imgs else Image
         return [
-            Subscriber(rf"{self.basetopic}/{loc}{self.suffix_cam_topic}", Image)
+            Subscriber(rf"{self.basetopic}/{loc}{self.suffix_cam_topic}", img_topic_msg_type)
             for loc in ['front', 'back', 'left', 'right']
         ]
 
@@ -118,6 +120,26 @@ class SceneParser():
         center_scan_sub = Subscriber(f"{self.basetopic}/center{self.suffix_laser_topic}", LaserScan)
         return laser_scans + [center_scan_sub]
 
+    def poll_sensor_info(self):
+        """
+        Polls for sensor information.
+        Currently, this is used to retrieve data from the `camera_info` topics,
+        for the purpose of storing some metadata from the cameras
+        (e.g., intrinsics matrices, image dimensions, etc).
+        Since this data stays constant, we do not need to subscribe to these topics,
+        we can just retrieve the data once.
+        """
+        for key in SensorSource:
+            if (key in SensorSource.ALL_CAMERAS) and (not key.name.startswith("ALL")):
+                topic = f"{self.basetopic}/{key.name.lower()}/camera_info"
+                if self.verbose:
+                    rospy.loginfo(f"Waiting for camera info from {topic}...")
+                msg = rospy.wait_for_message(topic, CameraInfo)
+                if self.verbose:
+                    rospy.loginfo(f"Intrinsics: {msg.K}")
+                    rospy.loginfo("Done.")
+                self.sensor_info[key] = msg
+
     def subscribers(self):
         """
         Instantiates the Subscribers for the topics of interest, registers
@@ -126,7 +148,12 @@ class SceneParser():
         Since we are collecting data from a multitude of sensors, we collect all
         subscribers in a ApproximateTimeSynchronizer message filter, so we will
         approximately line up sensor data in time.
+
+        Before subscribing to these topics, this method polls for messages from the cameras
+        to retrieve the camera intrinsics matrices. We do not need to subscribe to these
+        topics, because the intrinsics matrices will remain fixed.
         """
+        self.poll_sensor_info()
         cam_subs = self.image_subscribers()
         laser_subs = self.scan_subs()
 
@@ -134,6 +161,7 @@ class SceneParser():
 
         self.approx_ts = ApproximateTimeSynchronizer(cam_subs + laser_subs, 10, slop=0.51)
         self.approx_ts.registerCallback(self.cb)
+
         rospy.spin()
 
     def cb(self, *subscribers):

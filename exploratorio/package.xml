@@ -56,6 +56,8 @@
   <build_export_depend>rospy</build_export_depend>
   <exec_depend>message_filters</exec_depend>
   <exec_depend>rospy</exec_depend>
+  <exec_depend>python3-pytorch-pip</exec_depend>
+  <exec_depend>python-skimage-pip</exec_depend>
 
 
   <!-- The export tag contains other, unspecified, tags -->

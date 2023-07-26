@@ -34,6 +34,25 @@ once enough data has been collected, it will sample batches of
 video sequences from the replay buffer and log some (meta)data from
 the samples.
 
+## SfM
+This project performs unsupervised learning from video data to predict
+depth maps, using the [SfM algorithm](https://arxiv.org/abs/1704.07813).
+In order to experiment with the SfM algorithm, there is convenient python
+script that loads up a node that builds a replay buffer and instantiates an
+SfM model to interact with. Run
+
+```bash
+source src/prius_autonav/pydebug.bash
+```
+
+from the workspace root (only needs to be done once per shell). Then, execute
+
+```bash
+rosipython exploratorio test_sfm_integ.py
+```
+
+to get an iPython shell with the buffer and SfM model.
+
 ## Scene Parsing
 After having launched the `car_demo` as outlined above,
 simply run the test script (again from the catkin workspace root):
