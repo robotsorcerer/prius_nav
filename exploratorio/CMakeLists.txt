@@ -168,6 +168,8 @@ catkin_install_python(PROGRAMS
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     test/test_scene_parser.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    test/test_camera_replay.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(DIRECTORY scripts/sfm

@@ -36,6 +36,9 @@ class CameraSequenceReplayBuffer:
     def __len__(self):
         return sum([len(self.bufs[k]) for k in self.bufs.keys()])
 
+    def __getitem__(self, key):
+        return self.bufs[key]
+
     def store(self, img: List, sensor: SensorSource):
         """
         Stores image data in the buffer corresponding to the sensor specified by `sensor`.
@@ -90,6 +93,17 @@ class CameraSequenceReplayBuffer:
                 batches[key].append(data)
         return batches
 
+    def can_sample_sequence(self, horizon: int, sensors: SensorSource):
+        """
+        Indicates whether the buffer has amassed enough data to sample
+        sequences of length `horizon` for each sensor described by `sensors`.
+        """
+        for key in SensorSource:
+            if key in CAMERA_SOURCES:
+                if len(self.bufs[key]) < horizon:
+                    return False
+        return True
+
 class LRUCameraSequenceReplayBuffer(CameraSequenceReplayBuffer):
     """
     A `CameraSequenceReplayBuffer` with an alternate eviction strategy that
@@ -126,7 +140,6 @@ class CameraReplay(SceneParser):
 
     def cb(self, *subscribers):
         super().cb(*subscribers)
-        rospy.loginfo("Calling back")
         for camera in CAMERA_SOURCES:
             image = self.msg_data[camera]
             data = image_to_numpy(image)
