@@ -37,6 +37,39 @@ the samples.
 ## SfM
 This project performs unsupervised learning from video data to predict
 depth maps, using the [SfM algorithm](https://arxiv.org/abs/1704.07813).
+
+The `scripts/sfm_trainer.py` script provides a node that trains a SfM model
+either from online data that is being collected, or from an offline dataset.
+This script can be executed by
+
+```bash
+# Online training
+rosrun exploratorio sfm_trainer \
+    --buffer-size <capacity of replay buffer> \
+    --num-steps <number of training updates>
+
+# Offline training
+rosrun exploratorio sfm_trainer \
+    --offline \
+    --data-path <path of replay buffer dataset pickle> \
+    --sensor-path <path of sensor info pickle> \
+    --num-steps <number of training steps>
+```
+
+In the case of offline training, the `--data-path` and `--sensor-path` arguments
+default to `dataset.p` and `sensor-info.p`, which is where the online replay buffer
+stores these objects by default.
+
+To track experiment progress, execute the following from the catkin workspace root:
+
+```bash
+aim up
+```
+
+and navigate to the `localhost:43800` in your browser. Upon selecting a training run,
+loss metrics are logged in the `Metrics` pane, while image predictions are logged in the
+`Images` pane.
+
 In order to experiment with the SfM algorithm, there is convenient python
 script that loads up a node that builds a replay buffer and instantiates an
 SfM model to interact with. Run
