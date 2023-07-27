@@ -166,6 +166,8 @@ catkin_install_python(PROGRAMS
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/camera_replay.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    scripts/sfm_trainer.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     test/test_scene_parser.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     test/test_camera_replay.py
@@ -177,6 +179,10 @@ catkin_install_python(PROGRAMS
 install(DIRECTORY scripts/sfm
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     USE_SOURCE_PERMISSIONS
+)
+
+install(FILES scripts/train_util.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 ## Mark executables for installation

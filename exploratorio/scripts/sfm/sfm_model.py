@@ -13,6 +13,7 @@ import sfm.custom_transforms
 import sfm.models
 from sfm.utils import tensor2array, save_checkpoint, save_path_formatter, log_output_tensorboard
 
+from train_util import Artifacts
 from sfm.models.pose_exp_net import PoseExpNet
 from sfm.models.disp_net import DispNetS
 from sfm.loss_functions import photometric_reconstruction_loss, explainability_loss, smooth_loss
@@ -75,6 +76,8 @@ class SfmLearner:
                 Mean loss
         """
         batch_size = imgs[0].shape[0]
+
+        # Repeat intrinsics matrix across batch
         intrinsics = self.intrinsics.unsqueeze(0).expand(batch_size, 3, 3)
         intrinsics_inv = self.intrinsics_inv.unsqueeze(0).expand(batch_size, 3, 3)
 
@@ -88,7 +91,6 @@ class SfmLearner:
         # data_time.update(time.time() - end)
         tgt_img = tgt_img.to(self.device)
         ref_imgs = [img.to(self.device) for img in ref_imgs]
-        intrinsics = intrinsics.to(self.device)
 
         # compute output
         disparities = self.disp_net(tgt_img)
@@ -152,7 +154,28 @@ class SfmLearner:
         #
         # n_iter += 1
 
+        graphics = dict()
         if return_outputs:
-            return loss, depth, pose, explainability_mask
-        return loss
+            graphics = {
+                'depth': depth
+            }
+
+        other = dict()
+        if return_outputs:
+            other = {
+                'pose': pose,
+                'exp': explainability_mask,
+            }
+
+        return Artifacts(
+            metrics={
+                'loss/total': loss.item(),
+                'loss/photo': loss_1.item(),
+                'loss/mask': loss_2.item(),
+                'loss/smooth': loss_2.item(),
+            },
+            graphics=graphics,
+            other=other
+        )
+
         # return losses.avg[0]

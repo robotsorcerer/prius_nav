@@ -5,12 +5,15 @@ import sys
 import rospy
 import laser_geometry.laser_geometry as lg
 import pcl
+import pickle
 import logging
 import rospkg
 import numpy as np
+
+from dataclasses import dataclass
 from sensor_msgs.msg import CameraInfo, Image, CompressedImage, LaserScan, PointCloud2
 from message_filters import Subscriber, ApproximateTimeSynchronizer
-from typing import List
+from typing import List, Optional, Set
 # from geometry_msgs.msg import WrenchStamped
 
 # Necessary to resolve deprecation issue with np aliases
@@ -43,6 +46,9 @@ def ros_pointcloud2_to_pcl(msg: PointCloud2) -> pcl.PointCloud:
     points[:, 2] = msg['z']
     return pcl.PointCloud(points.astype(np.float32))
 
+def ros_camera_intrinsics(msg: CameraInfo) -> np.ndarray:
+    return np.array(msg.K).reshape(3, 3)
+
 class SensorSource(IntFlag):
     """
     This enum represents the different sensors that we will collect data from.
@@ -62,6 +68,33 @@ class SensorSource(IntFlag):
 
     ALL_SENSORS = ALL_CAMERAS | ALL_LASERS
 
+@dataclass
+class SensorCollection:
+    mask: SensorSource
+    sensors: Set[SensorSource]
+
+    def __len__(self):
+        return len(self.sensors)
+
+    @staticmethod
+    def from_mask(sensors: SensorSource):
+        sensor_set = set()
+        for key in SensorSource:
+            if key in sensors:
+                sensor_set.add(key)
+        return SensorCollection(sensors, sensor_set)
+
+    @staticmethod
+    def from_set(sensor_set: Set[SensorSource]):
+        mask = 0
+        for sensor in sensor_set:
+            mask |= sensor
+        return SensorCollection(mask, sensor_set)
+
+    @staticmethod
+    def empty():
+        return SensorCollection(SensorSource.ALL_SENSORS & 0, set())
+
 class SceneParser():
     """
     This ROS node collects data from various sensors in the prius robot.
@@ -73,7 +106,14 @@ class SceneParser():
     corresponding to the relevant sensor.
     """
 
-    def __init__(self, rate, compressed_imgs=True, verbose=False, data_collect=False):
+    def __init__(
+        self,
+        rate,
+        compressed_imgs=True,
+        verbose=False,
+        data_collect=False,
+        sensor_info_path: Optional[str] = 'sensor_info.p',
+    ):
         """
         rate: integer, not currently used
         """
@@ -90,6 +130,7 @@ class SceneParser():
         self.msg_data = {key: None for key in SensorSource if not key.name.startswith("ALL")}
         self.sensor_info = {key: None for key in SensorSource if not key.name.startswith("ALL")}
         self.compressed_imgs = compressed_imgs
+        self.sensor_info_path = sensor_info_path
 
         """
         This is required in order to translate a ROS LaserScan msg into a
@@ -139,6 +180,12 @@ class SceneParser():
                     rospy.loginfo(f"Intrinsics: {msg.K}")
                     rospy.loginfo("Done.")
                 self.sensor_info[key] = msg
+
+        if self.sensor_info_path is not None:
+            with open(self.sensor_info_path, "wb") as f:
+                pickle.dump(self.sensor_info, f)
+                if self.verbose:
+                    rospy.loginfo(f"Wrote sensor info to {os.path.abspath(self.sensor_info_path)}")
 
     def subscribers(self):
         """

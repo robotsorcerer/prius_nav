@@ -45,9 +45,12 @@ model = SfmLearner(intrinsics)
 
 batch = [t.permute(0, 3, 1, 2).to(model.device) for t in batch]
 
-loss, depths, pose, exps = model.train_step(batch, return_outputs=True)
+artifacts = model.train_step(batch, return_outputs=True)
 
+loss = artifacts.metrics['loss/total']
+depths = artifacts.graphics['depth']
+pose = artifacts.other['pose']
 rospy.loginfo("Computed SfM loss and gradients for batch")
-rospy.loginfo(f"SfM loss: {loss.item()}")
+rospy.loginfo(f"SfM loss: {loss}")
 rospy.loginfo(f"Computed multi-scale depth maps with shapes {[d.shape for d in depths]}")
 rospy.loginfo(f"Computed pose with shape {pose.shape}")

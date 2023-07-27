@@ -12,7 +12,7 @@ from typing import List, Tuple, Optional
 
 from sensor_msgs.msg import Image
 
-from scene_parser import SceneParser, SensorSource
+from scene_parser import SceneParser, SensorSource, SensorCollection, ros_camera_intrinsics
 
 CAMERA_SOURCES = [
     key for key in SensorSource
@@ -97,6 +97,8 @@ class CameraSequenceReplayBuffer:
             for k in range(horizon):
                 shifted_indices = batch_indices + k
                 data = itemgetter(*shifted_indices)(self.bufs[key])
+                if batch_size == 1:
+                    data = [data]
                 if decode:
                     data = np.array([
                         cv2.imdecode(image_to_numpy(d), cv2.IMREAD_UNCHANGED) for d in data
@@ -109,11 +111,23 @@ class CameraSequenceReplayBuffer:
         Indicates whether the buffer has amassed enough data to sample
         sequences of length `horizon` for each sensor described by `sensors`.
         """
+        # for key in SensorSource:
+        #     if (key in sensors) and (key in CAMERA_SOURCES):
+        #         if len(self.bufs[key]) < horizon:
+        #             return False
+        # return True
+        avail, _ = self.available_sensors(horizon, sensors, include_mask=True)
+        return (sensors & avail) == sensors
+
+    def available_sensors(self, horizon, sensors: SensorSource) -> SensorCollection:
+        mask = 0
+        sensor_set = set()
         for key in SensorSource:
-            if key in CAMERA_SOURCES:
-                if len(self.bufs[key]) < horizon:
-                    return False
-        return True
+            if (key in sensors) and (key in CAMERA_SOURCES):
+                if len(self.bufs[key]) >= horizon:
+                    mask |= key
+                    sensor_set.add(key)
+        return SensorCollection(mask, sensor_set)
 
 class LRUCameraSequenceReplayBuffer(CameraSequenceReplayBuffer):
     """
@@ -168,7 +182,7 @@ class CameraReplay(SceneParser):
         """
         if self.sensor_info[sensor] is None:
             return None
-        return np.array(self.sensor_info[sensor].K).reshape(3, 3)
+        return ros_camera_intrinsics(self.sensor_info[sensor])
 
     def camera_image_dimensions(self, sensor: SensorSource) -> Optional[Tuple[int, int]]:
         """
@@ -205,7 +219,7 @@ class CameraReplay(SceneParser):
 
 if __name__ == "__main__":
     rospy.init_node("online_camera_replay", anonymous=True, disable_signals=True)
-    buffer = CameraSequenceReplayBuffer(5000)
+    buffer = CameraSequenceReplayBuffer(25000)
     scene_parser = CameraReplay(buffer, 30, persist_period=30, verbose=True)
 
     # collect some wrenches and 0plot:: we are not doing any wrenches anymore, no?
