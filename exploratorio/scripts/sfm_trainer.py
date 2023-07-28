@@ -24,7 +24,15 @@ def process_img_data(img) -> torch.Tensor:
     return torch.tensor(img, requires_grad=False).permute(0, 3, 1, 2) / 255.0
 
 class SfMTrainer:
-    def __init__(self, run: Run, batch_size=32, horizon=3, demo_every=50, logdir='results'):
+    def __init__(
+        self,
+        run: Run,
+        batch_size=32,
+        horizon=3,
+        demo_every=50,
+        logdir='results',
+        model_params=dict(),
+    ):
         self.run = run
         self.batch_size = batch_size
         self.horizon = horizon
@@ -33,10 +41,20 @@ class SfMTrainer:
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         self.update_step = 0
         self.demo_every = demo_every
+        self.model_params = model_params
 
     def init_experiment(self):
         if self.model is None:
-            self.model = SfmLearner(self.intrinsics)
+            self.model = SfmLearner(self.intrinsics, **self.model_params)
+            if isinstance(self.run, Run):
+                self.run['hparams'] = self.hparams_dict()
+
+    def hparams_dict(self):
+        return {
+            'model': self.model.hparams,
+            'batch_size': self.batch_size,
+            'horizon': self.horizon,
+        }
 
     @property
     def intrinsics(self) -> torch.Tensor:
@@ -92,7 +110,7 @@ class SfMTrainer:
                 disp = self.model.disp_net(tgt_img.unsqueeze(0))[0].squeeze()
                 depth = 1 / disp
                 depth = torch.stack([depth] * 3)
-                depth_demo = torch.concat([tgt_img, depth], axis=-1)
+                depth_demo = torch.concat([tgt_img[[2, 1, 0], :, :], depth], axis=-1)
                 if self.run is not None:
                     self.run.track(Image(depth_demo), name='depth')
             if (num_steps > 0) and (step >= num_steps):
@@ -140,6 +158,11 @@ class OnlineSfMTrainer(SfMTrainer):
     @property
     def buffer(self):
         return self.node.replay_buffer
+
+    def hparams_dict(self):
+        hparams = super().hparams_dict()
+        hparams['training_format'] = 'online'
+        return hparams
 
     def available_sensors(self) -> SensorCollection:
         node = self.node
@@ -192,11 +215,23 @@ class OfflineSfMTrainer(SfMTrainer):
     def buffer(self):
         return self._buffer
 
+    def hparams_dict(self):
+        hparams = super().hparams_dict()
+        hparams['training_format'] = 'offline'
+        return hparams
+
     def available_sensors(self) -> SensorCollection:
         return self._available_sensors
 
 def main(args):
     run = None if args.dryrun else Run(experiment=args.experiment_name)
+
+    model_params = {
+        'mask_loss_weight': args.mask_loss_weight,
+        'photo_loss_weight': args.photo_loss_weight,
+        'smooth_loss_weight': args.smooth_loss_weight,
+        'lr': args.lr,
+    }
 
     if args.offline:
         rospy.init_node("offline_sfm_trainer")
@@ -205,7 +240,8 @@ def main(args):
             batch_size=args.batch_size,
             dataset_path=args.data_path,
             sensor_info_path=args.sensor_path,
-            demo_every=args.demo_every
+            demo_every=args.demo_every,
+            model_params=model_params,
         )
     else:
         trainer = OnlineSfMTrainer(
@@ -213,7 +249,8 @@ def main(args):
             batch_size=args.batch_size,
             buffer_size=args.buffer_size,
             persist_period=args.persist_period,
-            demo_every=args.demo_every
+            demo_every=args.demo_every,
+            model_params=model_params,
         )
     batch = trainer.sample_batch()
     rospy.loginfo(f"Length of batch sequence: {len(batch)}")
@@ -236,6 +273,10 @@ if __name__ == "__main__":
     parser.add_argument("--buffer-size", type=int, default=10_000)
     parser.add_argument("--persist-period", type=int, default=-1)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--mask-loss-weight", type=float, default=1.0)
+    parser.add_argument("--photo-loss-weight", type=float, default=1.0)
+    parser.add_argument("--smooth-loss-weight", type=float, default=0.1)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--num-steps", type=int, default=1_000)
     parser.add_argument("--demo-every", type=int, default=50, help="Steps between image logs")
     parser.add_argument("--dryrun", action="store_true", help="Do not track experiment")

@@ -51,6 +51,7 @@ class SfmLearner:
         self.disp_net = torch.nn.DataParallel(self.disp_net)
         self.pose_exp_net = torch.nn.DataParallel(self.pose_exp_net)
 
+        self.lr = lr
         self.optim_params = [
             {'params': self.disp_net.parameters(), 'lr': lr},
             {'params': self.pose_exp_net.parameters(), 'lr': lr}
@@ -62,6 +63,17 @@ class SfmLearner:
         )
         self.rotation_mode = rotation_mode
         self.padding_mode = padding_mode
+
+        self.hparams = {
+            'mask_loss_weight': self.mask_loss_weight,
+            'photo_loss_weight': self.photo_loss_weight,
+            'smooth_loss_weight': self.smooth_loss_weight,
+            'lr': self.lr,
+            'momentum': momentum,
+            'beta': beta,
+            'rotation_mode': self.rotation_mode,
+            'padding_mode': self.padding_mode,
+        }
 
     def train_step(self, imgs, return_outputs=False):
         """
