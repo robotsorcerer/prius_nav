@@ -4,47 +4,23 @@ import os
 import sys
 import rospy
 import laser_geometry.laser_geometry as lg
-import pcl
 import pickle
 import logging
-import rospkg
 import numpy as np
 
 from dataclasses import dataclass
 from sensor_msgs.msg import CameraInfo, Image, CompressedImage, LaserScan, PointCloud2
 from message_filters import Subscriber, ApproximateTimeSynchronizer
-from typing import List, Optional, Set
-# from geometry_msgs.msg import WrenchStamped
+from typing import List, Optional, FrozenSet
 
-# Necessary to resolve deprecation issue with np aliases
-# Must include before importing ros_numpy
 np.float = float
-import ros_numpy
 
 from enum import IntFlag, auto
-from rospy.rostime import Duration
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# from scripts.wrench_viz import WrenchVisualizer
-
-rospack = rospkg.RosPack()
-# data_dir = rospack.get_path('param_est') + '/data'
-# if not os.path.exists(data_dir):
-# 	os.makedirs(data_dir)
 
 LOGGER = logging.getLogger(__name__)
 
-
-def ros_pointcloud2_to_pcl(msg: PointCloud2) -> pcl.PointCloud:
-    """
-    Converts a `sensor_msgs.msg.PointCloud2` message into a `PointCloud` pcl object.
-    """
-    msg = ros_numpy.numpify(msg)
-    points = np.zeros((msg.shape[0], 3))
-    points[:, 0] = msg['x']
-    points[:, 1] = msg['y']
-    points[:, 2] = msg['z']
-    return pcl.PointCloud(points.astype(np.float32))
 
 def ros_camera_intrinsics(msg: CameraInfo) -> np.ndarray:
     return np.array(msg.K).reshape(3, 3)
