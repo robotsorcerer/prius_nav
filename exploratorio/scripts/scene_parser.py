@@ -11,7 +11,7 @@ import numpy as np
 from dataclasses import dataclass
 from sensor_msgs.msg import CameraInfo, Image, CompressedImage, LaserScan, PointCloud2
 from message_filters import Subscriber, ApproximateTimeSynchronizer
-from typing import List, Optional, FrozenSet
+from typing import List, Optional, FrozenSet, Set
 
 np.float = float
 
@@ -222,7 +222,6 @@ if __name__ == "__main__":
     rospy.init_node("estimator_node", anonymous=True, disable_signals=True)
     scene_parser = SceneParser(30, verbose=True)
 
-    # collect some wrenches and 0plot:: we are not doing any wrenches anymore, no?
     try:
         while not rospy.is_shutdown():
             scene_parser.subscribers()

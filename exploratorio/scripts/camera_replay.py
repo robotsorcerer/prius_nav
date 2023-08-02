@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 
-import cv2
-import numpy as np
 import os
-import pickle
+import cv2
 import rospy
+import pickle
+import numpy as np
+from sensor_msgs.msg import Image
 
 from collections import deque
 from operator import itemgetter
 from typing import List, Tuple, Optional
-
-from sensor_msgs.msg import Image
 
 from scene_parser import SceneParser, SensorSource, SensorCollection, ros_camera_intrinsics
 
@@ -111,17 +110,12 @@ class CameraSequenceReplayBuffer:
         Indicates whether the buffer has amassed enough data to sample
         sequences of length `horizon` for each sensor described by `sensors`.
         """
-        # for key in SensorSource:
-        #     if (key in sensors) and (key in CAMERA_SOURCES):
-        #         if len(self.bufs[key]) < horizon:
-        #             return False
-        # return True
-        avail, _ = self.available_sensors(horizon, sensors, include_mask=True)
+        avail = self.available_sensors(horizon, sensors)
         return (sensors & avail) == sensors
 
     def available_sensors(self, horizon, sensors: SensorSource) -> SensorCollection:
-        mask = 0
         sensor_set = set()
+        mask = 0
         for key in SensorSource:
             if (key in sensors) and (key in CAMERA_SOURCES):
                 if len(self.bufs[key]) >= horizon:
@@ -222,7 +216,6 @@ if __name__ == "__main__":
     buffer = CameraSequenceReplayBuffer(25000)
     scene_parser = CameraReplay(buffer, 30, persist_period=30, verbose=True)
 
-    # collect some wrenches and 0plot:: we are not doing any wrenches anymore, no?
     try:
         while not rospy.is_shutdown():
             scene_parser.subscribers()
