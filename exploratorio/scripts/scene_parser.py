@@ -3,16 +3,18 @@
 import os
 import sys
 import rospy
-import laser_geometry.laser_geometry as lg
 import pickle
 import logging
 import numpy as np
-
+from os.path import join 
 from dataclasses import dataclass
+import laser_geometry.laser_geometry as lg
 from sensor_msgs.msg import CameraInfo, Image, CompressedImage, LaserScan, PointCloud2
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 from typing import List, Optional, FrozenSet, Set
 
+import rospkg
+rospack = rospkg.RosPack()
 np.float = float
 
 from enum import IntFlag, auto
@@ -106,7 +108,12 @@ class SceneParser():
         self.msg_data = {key: None for key in SensorSource if not key.name.startswith("ALL")}
         self.sensor_info = {key: None for key in SensorSource if not key.name.startswith("ALL")}
         self.compressed_imgs = compressed_imgs
-        self.sensor_info_path = sensor_info_path
+
+        data_dir = rospack.get_path('exploratorio') + '/data'
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+
+        self.sensor_info_path = join(data_dir, sensor_info_path)
 
         """
         This is required in order to translate a ROS LaserScan msg into a
