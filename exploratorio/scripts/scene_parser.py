@@ -150,8 +150,11 @@ class SceneParser():
         Currently, this is used to retrieve data from the `camera_info` topics,
         for the purpose of storing some metadata from the cameras
         (e.g., intrinsics matrices, image dimensions, etc).
+
         Since this data stays constant, we do not need to subscribe to these topics,
         we can just retrieve the data once.
+
+        [Lekan::08/02: You can pass this to a ros service instead]
         """
         for key in SensorSource:
             if (key in SensorSource.ALL_CAMERAS) and (not key.name.startswith("ALL")):
