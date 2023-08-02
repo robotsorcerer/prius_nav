@@ -111,7 +111,7 @@ class CameraSequenceReplayBuffer:
         sequences of length `horizon` for each sensor described by `sensors`.
         """
         avail = self.available_sensors(horizon, sensors)
-        return (sensors & avail) == sensors
+        return (sensors & avail.mask) == sensors
 
     def available_sensors(self, horizon, sensors: SensorSource) -> SensorCollection:
         sensor_set = set()
