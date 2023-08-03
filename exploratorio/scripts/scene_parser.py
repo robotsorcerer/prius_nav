@@ -87,7 +87,7 @@ class SceneParser():
     def __init__(
         self,
         rate,
-        compressed_imgs=True,
+        compressed_imgs=False,
         verbose=False,
         data_collect=False,
         sensor_info_path: Optional[str] = 'sensor_info.p',
@@ -101,7 +101,7 @@ class SceneParser():
 
         self.verbose = verbose
         self.basetopic = "/prius"
-        self.suffix_cam_topic = "_camera/image_raw/compressed"
+        self.suffix_cam_topic = "_camera/image_raw"
         self.suffix_laser_topic = "_laser/scan"
         self.topics = []
 
@@ -217,6 +217,8 @@ class SceneParser():
         frontright_cloud = self.laser_projector.projectLaser(frontright_laser)
         center_cloud = self.laser_projector.projectLaser(center_laser)
 
+        print(front_camera, "front_camera")
+        print() 
         self.msg_data[SensorSource.FRONT_CAMERA] = front_camera
         self.msg_data[SensorSource.BACK_CAMERA] = back_camera
         self.msg_data[SensorSource.LEFT_CAMERA] = left_camera
@@ -226,7 +228,6 @@ class SceneParser():
         self.msg_data[SensorSource.FRONT_RIGHT_LASER] = frontright_cloud
         self.msg_data[SensorSource.CENTER_LASER] = center_cloud
         self.loaded_data = True
-
 
 if __name__ == "__main__":
     rospy.init_node("estimator_node", anonymous=True, disable_signals=True)

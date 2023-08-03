@@ -7,6 +7,9 @@ import pickle
 import numpy as np
 from sensor_msgs.msg import Image
 
+import rospkg
+rospack = rospkg.RosPack()
+from os.path import join
 from collections import deque
 from operator import itemgetter
 from typing import List, Tuple, Optional
@@ -17,6 +20,11 @@ CAMERA_SOURCES = [
     key for key in SensorSource
     if (key in SensorSource.ALL_CAMERAS) and (not key.name.startswith("ALL"))
 ]
+
+
+data_dir = rospack.get_path('exploratorio') + '/data'
+if not os.path.exists(data_dir):
+    os.makedirs(data_dir)
 
 def image_to_numpy(img: Image) -> np.ndarray:
     return np.frombuffer(img.data, dtype=np.uint8)
@@ -111,16 +119,20 @@ class CameraSequenceReplayBuffer:
         sequences of length `horizon` for each sensor described by `sensors`.
         """
         avail = self.available_sensors(horizon, sensors)
+        rospy.logdebug(f"avail: {avail} sensors: {sensors}")
         return (sensors & avail.mask) == sensors
 
     def available_sensors(self, horizon, sensors: SensorSource) -> SensorCollection:
         sensor_set = set()
         mask = 0
         for key in SensorSource:
+            rospy.loginfo(f"key: {key}")
             if (key in sensors) and (key in CAMERA_SOURCES):
+                rospy.loginfo(f"key (inner loop): {key}, {len(self.bufs[key])}")
                 if len(self.bufs[key]) >= horizon:
                     mask |= key
                     sensor_set.add(key)
+            rospy.logdebug(f"key: {key} sensor set: {sensor_set}")
         return SensorCollection(mask, sensor_set)
 
 class LRUCameraSequenceReplayBuffer(CameraSequenceReplayBuffer):
@@ -166,7 +178,7 @@ class CameraReplay(SceneParser):
         self.replay_buffer = replay_buffer
         self.persist_period = persist_period
         self._last_write_time = rospy.Time.now()
-        self.dataset_filepath = dataset_filepath
+        self.dataset_filepath = join(data_dir, dataset_filepath)
         self._abs_dataset_path = os.path.abspath(self.dataset_filepath)
 
     def camera_intrinsics(self, sensor: SensorSource) -> Optional[np.ndarray]:

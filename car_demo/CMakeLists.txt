@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.6)
 project(car_demo)
 
 set (PRIUSCUP_MAJOR_VERSION 0)

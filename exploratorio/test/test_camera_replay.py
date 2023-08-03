@@ -17,25 +17,29 @@ CAMERA_SENSORS = [SensorSource.FRONT_CAMERA,
                   SensorSource.LEFT_CAMERA,
                   SensorSource.RIGHT_CAMERA]
 
-SEPARATOR = '=' * 20
+SEPARATOR = ">>" + '=' * 20 + ">>"
 
 if __name__ == "__main__":
-    print("Running")
     rospy.init_node("estimator_node", anonymous=True, disable_signals=True)
     buffer = CameraSequenceReplayBuffer(CAPACITY)
     buffer_node = CameraReplay(buffer, 30)
 
     try:
-        thr = threading.Thread(target=buffer_node.subscribers, args=(), kwargs={})
-        if not rospy.is_shutdown():
-            thr.start()
+        cb_thread = threading.Thread(
+            target=lambda: buffer_node.subscribers()
+        )
+        cb_thread.daemon = True
+        cb_thread.start()
+
+
+        # wait for a few secs after thread has spawned before starting identification
+        # time.sleep(12)
+
         while not rospy.is_shutdown():
             rospy.loginfo(f"Replay buffer size: {len(buffer_node.replay_buffer)}/{CAPACITY}")
             buffer_sizes = {key: len(buffer_node.replay_buffer[key]) for key in CAMERA_SENSORS}
-            rospy.loginfo(f"Individual buffer sizes: {buffer_sizes}")
-            rospy.loginfo(
-                f"Sampling batch of {BATCH_SIZE} sequences of length {HORIZON} from each sensor"
-            )
+            rospy.loginfo(f"Buffers' length: {[(k, v) for (k,v) in buffer_sizes.items()]}")
+            rospy.loginfo(f"Sampling batch of {BATCH_SIZE} sequences of length {HORIZON} from each sensor")
             if buffer_node.replay_buffer.can_sample_sequence(HORIZON, SensorSource.ALL_CAMERAS):
                 sampled_data = buffer_node.replay_buffer.sample(
                     BATCH_SIZE,
@@ -49,8 +53,6 @@ if __name__ == "__main__":
             else:
                 rospy.logwarn("Not enough data to sample sequence from all sensors")
             rospy.loginfo(SEPARATOR)
-            time.sleep(2)
+            time.sleep(1)
     except rospy.ROSInterruptException:
         rospy.logfatal("shutting down ros")
-    except KeyboardInterrupt:
-        thr.join(1)
