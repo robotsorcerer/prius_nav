@@ -1,0 +1,3 @@
+[submodule "bonnetal"]
+	path = bonnetal
+	url = https://github.com/PRBonn/bonnetal.git
