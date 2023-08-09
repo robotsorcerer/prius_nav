@@ -47,6 +47,8 @@ def render_pointclouds(pointclouds: List[o3d.geometry.PointCloud]):
 def main(args):
     raw_image = cv2.imread('data/sample-image-01.png')
     depth_map = cv2.imread('data/sample-depth-01.png')
+    plt.imshow(np.concatenate([raw_image, depth_map], axis=1))
+    plt.show()
     depth_mask = jnp.array(depth_map).mean(axis=-1)
     sam = sam_model_registry['vit_h'](checkpoint='models/sam_vit_h_4b8939.pth')
     mask_generator = SamAutomaticMaskGenerator(sam)
