@@ -6,4 +6,7 @@ __pycache__
 **/*.pyc
 
 
+build
+install
+log
 exploratorio/data

@@ -49,6 +49,19 @@ class CameraSequenceReplayBuffer:
     def __getitem__(self, key):
         return self.bufs[key]
 
+    def decode(self, data):
+        """
+        Returns a RGB bitmap corresponding to the possibly encoded data stored in the
+        buffer.
+
+        Inputs:
+            data: an element from self.bufs[k] for some sensor k
+
+        Returns:
+            img: a HxWx3 bitmap
+        """
+        return cv2.imdecode(image_to_numpy(data), cv2.IMREAD_UNCHANGED)
+
     def store(self, img: List, sensor: SensorSource):
         """
         Stores image data in the buffer corresponding to the sensor specified by `sensor`.
@@ -108,7 +121,7 @@ class CameraSequenceReplayBuffer:
                     data = [data]
                 if decode:
                     data = np.array([
-                        cv2.imdecode(image_to_numpy(d), cv2.IMREAD_UNCHANGED) for d in data
+                        self.decode(d) for d in data
                     ])
                 batches[key].append(data)
         return batches

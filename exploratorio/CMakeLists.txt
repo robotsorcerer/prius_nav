@@ -170,6 +170,8 @@ catkin_install_python(PROGRAMS
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/dump_images.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    scripts/reformat_dataset.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     test/test_scene_parser.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     test/test_camera_replay.py
