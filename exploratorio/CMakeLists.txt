@@ -168,6 +168,8 @@ catkin_install_python(PROGRAMS
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/sfm_trainer.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    scripts/scene_generator.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/dump_images.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/reformat_dataset.py

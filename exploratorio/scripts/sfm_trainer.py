@@ -30,6 +30,8 @@ class SfMTrainer:
         batch_size=32,
         horizon=3,
         demo_every=50,
+        ckpt_every=50,
+        ckpt_path=None,
         logdir='results',
         model_params=dict(),
     ):
@@ -41,11 +43,14 @@ class SfMTrainer:
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         self.update_step = 0
         self.demo_every = demo_every
+        self.ckpt_every = ckpt_every
+        self.ckpt_path = ckpt_path
         self.model_params = model_params
 
     def init_experiment(self):
         if self.model is None:
-            self.model = SfmLearner(self.intrinsics, **self.model_params)
+            self.model = SfmLearner(
+                self.intrinsics, checkpoint_path=self.ckpt_path, **self.model_params)
             if isinstance(self.run, Run):
                 self.run['hparams'] = self.hparams_dict()
 
@@ -113,6 +118,12 @@ class SfMTrainer:
                 depth_demo = torch.concat([tgt_img[[2, 1, 0], :, :], depth], axis=-1)
                 if self.run is not None:
                     self.run.track(Image(depth_demo), name='depth')
+
+            if (step + 1) % self.ckpt_every == 0:
+                ckpt_path = f"checkpoints/{step + 1}"
+                rospy.loginfo(f"Writing checkpoint to {os.path.abspath(ckpt_path)}")
+                self.model.save_checkpoint(ckpt_path)
+
             if (num_steps > 0) and (step >= num_steps):
                 break
 
@@ -241,7 +252,9 @@ def main(args):
             dataset_path=args.data_path,
             sensor_info_path=args.sensor_path,
             demo_every=args.demo_every,
+            ckpt_every=args.ckpt_every,
             model_params=model_params,
+            ckpt_path=args.pretrain_path,
         )
     else:
         trainer = OnlineSfMTrainer(
@@ -250,7 +263,9 @@ def main(args):
             buffer_size=args.buffer_size,
             persist_period=args.persist_period,
             demo_every=args.demo_every,
+            ckpt_every=args.ckpt_every,
             model_params=model_params,
+            ckpt_path=args.pretrain_path,
         )
     batch = trainer.sample_batch()
     rospy.loginfo(f"Length of batch sequence: {len(batch)}")
@@ -279,6 +294,8 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--num-steps", type=int, default=1_000)
     parser.add_argument("--demo-every", type=int, default=50, help="Steps between image logs")
+    parser.add_argument("--ckpt-every", type=int, default=50, help="Steps between checkpoints")
+    parser.add_argument("--pretrain-path", default=None)
     parser.add_argument("--dryrun", action="store_true", help="Do not track experiment")
 
     args = parser.parse_args()

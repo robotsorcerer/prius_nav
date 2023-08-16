@@ -5,13 +5,14 @@ import torch.optim
 import torch.utils.data
 
 import numpy as np
+import os
 import torch
 import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import sfm.custom_transforms
 import sfm.models
-from sfm.utils import tensor2array, save_checkpoint, save_path_formatter, log_output_tensorboard
+# from sfm.utils import tensor2array, save_checkpoint, save_path_formatter, log_output_tensorboard
 
 from train_util import Artifacts
 from sfm.models.pose_exp_net import PoseExpNet
@@ -24,6 +25,7 @@ class SfmLearner:
     def __init__(
         self,
         intrinsics: np.ndarray,
+        checkpoint_path=None,
         mask_loss_weight=1,
         photo_loss_weight=1,
         smooth_loss_weight=0.1,
@@ -47,6 +49,9 @@ class SfmLearner:
             nb_ref_imgs=sequence_length - 1,
             output_exp=mask_loss_weight > 0
         ).to(self.device)
+
+        if checkpoint_path is not None:
+            self.load_checkpoint(checkpoint_path)
 
         self.disp_net = torch.nn.DataParallel(self.disp_net)
         self.pose_exp_net = torch.nn.DataParallel(self.pose_exp_net)
@@ -191,3 +196,15 @@ class SfmLearner:
         )
 
         # return losses.avg[0]
+    def save_checkpoint(self, path):
+        os.makedirs(path, exist_ok=True)
+        disp_path = os.path.join(path, 'disp.pth.tar')
+        pose_path = os.path.join(path, 'pose.pth.tar')
+        torch.save({'state_dict': self.disp_net.module.state_dict()}, disp_path)
+        torch.save({'state_dict': self.pose_exp_net.module.state_dict()}, pose_path)
+
+    def load_checkpoint(self, path):
+        disp_weights = torch.load(os.path.join(path, 'disp.pth.tar'))
+        pose_weights = torch.load(os.path.join(path, 'pose.pth.tar'))
+        self.disp_net.load_state_dict(disp_weights['state_dict'])
+        self.pose_exp_net.load_state_dict(pose_weights['state_dict'])
