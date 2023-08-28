@@ -1,34 +1,83 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
+import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
 import pickle
 import torch
 
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+from rembg import remove
+from transformers import AutoModelForDepthEstimation
 from typing import List
 
-from sfm.sfm_model import SfmLearner
-
 from scene_parser import SensorSource, SensorCollection, ros_camera_intrinsics
+
+CAMERA_LINKS = {
+    'FRONT_CAMERA': {
+        'pos': np.array([0.0, 1.4, 0.4]),
+        'pos_level': np.array([0.0, 0.0, 0.4]),
+        'angle': 0.0,
+    },
+    'BACK_CAMERA': {
+        'pos': np.array([0.0, 1.4, -1.45]),
+        'pos_level': np.array([0.0, 0.0, -1.45]),
+        'angle': np.pi,
+    },
+    'LEFT_CAMERA': {
+        'pos': np.array([1.0, 1.0, -0.7]),
+        'pos_level': np.array([1.0, 0.0, -0.7]),
+        'angle': np.pi / 2,
+    },
+    'RIGHT_CAMERA': {
+        'pos': np.array([-1.0, 1.0, -0.7]),
+        'pos_level': np.array([-1.0, 0.0, -0.7]),
+        'angle': -np.pi / 2
+    },
+}
+
+CAMERA_KEYS = list(CAMERA_LINKS.keys())
 
 def tensor_to_pointcloud(points: np.ndarray) -> o3d.geometry.PointCloud:
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
     return pcd
 
+def camera_orientation_matrix(pos, angle, axis):
+    mat = np.eye(4)
+    mat[-1, :3] = pos
+    mat[0, 0] = np.sin(angle)
+    mat[0, 2] = np.cos(angle)
+    mat[2, 0] = np.cos(angle)
+    mat[2, 2] = -np.sin(angle)
+    return mat
+
 class SceneGenerator:
     """
     An object that renders 3D pointclouds from segmentation masks and depth predictions.
+
+    Params:
+        checkpoint (str): The checkpoint for the DPT transformer depth predictor
+        sensor_info_path (str): Path where the camera sensor data is stored
+        depth_thresh (int): Threshold used to extract objects from alpha channel of foreground prediction
+        depth_inf (float): Maximum depth prediction, used mainly for visualization
+        discrete_img (bool): Whether to use integer or floating point representation of image for depth prediction
+        flip_colors (bool): Whether to inverse the order of color channels
+        flip_x (bool): Whether to flip the direction of the x axis (unused for now)
     """
     def __init__(
         self,
-        checkpoint_path: str,
-        sam_path: str = './models/sam_vit_h_4b8939.pth',
+        checkpoint: str = 'vinvino02/glpn-nyu',
         sensor_info_path: str = 'sensor_info.p',
+        depth_thresh: int = 50,
+        depth_inf: float = 5.0,
+        discrete_img: bool = False,
+        flip_colors: bool = True,
+        flip_x: bool = False,
     ):
+        self.checkpoint = checkpoint
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         with open(sensor_info_path, 'rb') as f:
@@ -39,85 +88,113 @@ class SceneGenerator:
 
         self.intrinsics_inv = torch.tensor(self.intrinsics_inv).to(self.device).float()
 
-        self.sfm = SfmLearner(self.intrinsics, checkpoint_path=checkpoint_path)
-        self.sfm.disp_net.eval()
-        self.sfm.pose_exp_net.eval()
+        self.depth_model = AutoModelForDepthEstimation.from_pretrained(checkpoint)
 
-        self.mask_indices = set()
-
-        self.sam = sam_model_registry['vit_h'](checkpoint=sam_path)
-        self.mask_generator = SamAutomaticMaskGenerator(self.sam)
-
-        self.masks = None
         self.img = None
         self.depth = None
 
-    def add_mask_index(self, index):
-        """
-        Add a mask index to be represented in the pointcloud.
-        """
-        self.mask_indices.add(index)
+        self.depth_thresh = depth_thresh
+        self.depth_inf = depth_inf
 
-    def remove_mask_index(self, index):
-        """
-        Remove a mask index from the set of objects represented by the pointcloud.
-        """
-        self.mask_indices.remove(index)
+        self.discrete_img = discrete_img
+        self.flip_colors = flip_colors
+        self.flip_x = flip_x
 
-    def set_mask_indices(self, i):
+    def preprocess_img(self, img: np.ndarray) -> torch.Tensor:
         """
-        Sets the set of mask indices that will be generated in the pointcloud.
+        Preprocess numpy image matrix for compatibility with depth prediction network.
         """
-        if isinstance(i, int):
-            i = [i]
-        self.mask_indices = set(i)
-
-    def set_image(self, img):
-        """
-        Sets the image that the scene will be rendered from.
-        """
-        self.img = img
-        self.masks = self.mask_generator.generate(img)
-        self.depth = self.predict_depth(img)
+        if self.flip_colors:
+            img = img[:, :, [2, 1, 0]]
+        img_t = torch.Tensor(img).permute(2, 0, 1).squeeze().unsqueeze(0)
+        if self.discrete_img:
+            return img_t
+        return img_t / 255.0
 
     def predict_depth(self, img):
         """
-        Uses the SfM model to predict the depthmap for `img`.
-        """
-        img = img / 255
-        disp = (self.sfm.disp_net(torch.FloatTensor(img).unsqueeze(0).permute(0, 3, 1, 2))
-                .squeeze()
-                .detach()
-                .cpu()
-                .numpy())
-        return 1 / disp
+        Predict depth map from image.
 
-    def masked_image(self, mask_color=[255, 255, 0], mask_alpha=0.5):
-        """
-        Returns an image containing the pixels from `self.img` with pixels
-        highlighted according to the pixels contained in the masks specified
-        by the enabled mask indices. These are the indices specified by
-        `self.set_mask_indices` or `self.add_mask_index`.
-        """
-        mask_color = np.array(mask_color)
-        img_masked = self.img.copy()
-        for i in self.mask_indices:
-            mask = self.masks[i]['segmentation']
-            img_masked[mask] = mask_alpha * mask_color + (1 - mask_alpha) * self.img[mask]
-        return img_masked
+        Params:
+            img (tensor): (Batch of) image data, dimensions [B, 3, W, H]
 
-    def preview(self, mask_color=[255, 255, 0], mask_alpha=0.5):
+        Returns:
+            depth (tensor): Real-valued depth map, dimensions [B, W, H]
         """
-        Displays a visualization of the pixels masked by `self.mask_indices` and
-        the predicted depth map.
+        return self.depth_model(img).predicted_depth
+
+    def predict_mask(self, img):
         """
-        img_masked = self.masked_image(mask_color=mask_color, mask_alpha=mask_alpha)
+        Predict background mask.
+
+        Params:
+            img (ndarray): Image pixels, dimensions [W, H, 3]
+
+        Returns:
+            mask (ndarray): Integer-valued alpha channel, lower values indicating background.
+        """
+        return remove(img)[:, :, -1]
+
+    def masked_depth_image(self, img):
+        """
+        Compute depth map, replacing background pixels with maximum depth.
+
+        Params:
+            img (ndarray): Image pixels, dimensions [W, H, 3]
+
+        Returns:
+            masked depth (ndarray)
+        """
+        img_t = self.preprocess_img(img)
+        depth = self.predict_depth(img_t).squeeze().detach().cpu().numpy()
+        mask = self.predict_mask(img)
+        return np.where(mask < self.depth_thresh, self.depth_inf, depth)
+
+    def preview(self, img, masked=True):
+        """
+        Displays a side-by-side view of the raw image and the predicted depth.
+
+        Params:
+            img (ndarray): The image to predict depth from
+            masked (bool, True): Whether to eliminate background pixels from depth
+        """
+        if masked:
+            depth_img = self.masked_depth_image(img)
+        else:
+            img_t = self.preprocess_img(img)
+            depth_img = self.predict_depth(img_t).squeeze().detach().cpu().numpy()
         fig, axs = plt.subplots(1, 2)
-        axs[0].imshow(img_masked)
-        axs[0].set_title("Masked Pixels")
-        axs[1].imshow(self.depth)
+        axs[0].imshow(img)
+        axs[0].set_title("Raw Image")
+        axs[1].imshow(depth_img)
         axs[1].set_title("Predicted Depth")
         fig.show()
+
+    def show_multi_image(self, imgs, mode='raw'):
+        """
+        Displays images (or depth predictions) from all cameras.
+
+        Params:
+            imgs (dict): Dictionary mapping camera key (see CAMERA_KEYS) to image pixels
+            mode (str, 'raw'): Either 'raw', 'depth', or 'masked'. When 'raw', shows the
+                               raw images from each camera. When 'depth', shows the depth
+                               predictions for each camera. When 'masked', shows the depth
+                               predictions with background pixels eliminated for each camera.
+        """
+        n = len(list(imgs.keys()))
+        fig, axs = plt.subplots(1, n)
+        for (i, key) in enumerate(imgs.keys()):
+            img = imgs[key]
+            if mode == 'depth':
+                img = self.predict_depth(self.preprocess_img(img)).detach().cpu().numpy().squeeze()
+            elif mode == 'masked':
+                img = self.masked_depth_image(img)
+            axs[i].imshow(img)
+            axs[i].set_axis_off()
+            axs[i].set_title(key)
+        fig.tight_layout()
+        fig.show()
+        return fig
 
     def pixel_coords_to_3d_coords(self, pixel_coords, depth_map=None, flat=False):
         """
@@ -130,7 +207,7 @@ class SceneGenerator:
         """
         if depth_map is None:
             depth_map = self.depth
-        depths = depth_map[pixel_coords[:, 0], pixel_coords[:, 1]]
+        depths = depth_map.squeeze()[pixel_coords[:, 0], pixel_coords[:, 1]]
 
         depths = torch.tensor(depths).float().to(self.device)
 
@@ -143,48 +220,111 @@ class SceneGenerator:
         # Correction for o3d
         projected_pixel_coords = projected_pixel_coords[:, [1, 0, 2]]
         projected_pixel_coords[:, 1] *= -1
+        projected_pixel_coords[:, 0] *= -1
 
         if flat:
             return projected_pixel_coords
         return depths[:, None] * projected_pixel_coords
 
-    def masked_pointcloud(self, flat=False) -> List[o3d.geometry.PointCloud]:
+    def masked_pointcloud(self, img, flat=False, inv_depth=False) -> List[o3d.geometry.PointCloud]:
         """
-        Returns a list of 3D pointclouds for each segmentation mask in `self.mask_indices`.
+        Returns a point cloud from obstacle pixels in `img`.
 
         When `flat` is `True`, the depth map is ignored.
+
+        When `inv_depth` is `True`, depth values are replaced by `self.depth_inf - depth`
+        (this was used for debugging).
+        """
+        mask = self.predict_mask(img)
+        pixel_coords = np.argwhere(mask > self.depth_thresh)
+        img_t = self.preprocess_img(img)
+        depth = self.predict_depth(img_t)
+        if inv_depth:
+            depth = self.depth_inf - depth
+        points = (self.pixel_coords_to_3d_coords(pixel_coords, depth_map=depth, flat=flat)
+                  .detach().cpu().numpy())
+        return tensor_to_pointcloud(points)
+
+    def multi_masked_pointcloud(self, imgs, inv_depth=False):
+        """
+        Returns a list of point clouds corresponding to observations from multiple cameras
+        (see `self.masked_pointcloud`).
+
+        Params:
+            imgs (dict): Dictionary mapping camera keys (see CAMERA_KEYS) to image pixels.
+
+        Returns:
+            pcs (List[o3d.geometry.PointCloud]): point cloud for each camera view, rotated
+            and translated relative to the camera pose with respect to the car's local frame.
         """
         pcs = []
-        for i in self.mask_indices:
-            mask = self.masks[i]['segmentation']
-            pixel_coords = np.argwhere(mask)
-            points = (self.pixel_coords_to_3d_coords(pixel_coords, flat=flat)
-                      .detach().cpu().numpy())
-            pcs.append(tensor_to_pointcloud(points))
+        for camera_key in imgs:
+            img_cur = imgs[camera_key]
+            pc = self.masked_pointcloud(img_cur, inv_depth=inv_depth)
+            camera_pose = CAMERA_LINKS[camera_key]
+            theta = camera_pose['angle']
+            xyz = camera_pose['pos_level']
+            R = pc.get_rotation_matrix_from_xyz((0, theta, 0))
+            pc = copy.deepcopy(pc).translate(xyz).rotate(R, center=xyz)
+            pcs.append(pc)
         return pcs
 
-    def scene(self):
+    def scene(self, img, flat=False, inv_depth=False):
         """
-        Generates pointclouds from the objects specified in `self.mask_indices`
+        Generates pointclouds from input images
         and launches a 3D visualization of these pointclouds.
         """
-        pcs = self.masked_pointcloud()
-        o3d.visualization.draw_geometries(pcs)
+        frame = o3d.geometry.TriangleMesh.create_coordinate_frame()
+        if isinstance(img, dict):
+            pcs = self.multi_masked_pointcloud(img, inv_depth=inv_depth)
+            o3d.visualization.draw_geometries([frame] + pcs)
+        else:
+            pcs = self.masked_pointcloud(img, flat=flat, inv_depth=inv_depth)
+            o3d.visualization.draw_geometries([frame, pcs])
+
+    def scene_anim(self, imgs, inv_depth=False, n_frames=100):
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame()
+        pcs = self.multi_masked_pointcloud(imgs, inv_depth=inv_depth)
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+        vis.add_geometry(axis)
+        for pc in pcs:
+            vis.add_geometry(pc)
+
+        frames = []
+        for frame_idx in range(n_frames):
+            vis.clear_geometries()
+            R = axis.get_rotation_matrix_from_xyz((0, 2 * np.pi * frame_idx / n_frames, 0))
+            rotated_axis = copy.deepcopy(axis).rotate(R, center=(0, 0, 0))
+            vis.add_geometry(rotated_axis)
+            for pc in pcs:
+                rotated_pc = copy.deepcopy(pc).rotate(R, center=(0, 0, 0))
+                vis.add_geometry(rotated_pc)
+
+            # vis.update_geometry()
+            vis.poll_events()
+            vis.update_renderer()
+
+            camera = vis.get_view_control().convert_to_pinhole_camera_parameters()
+            camera.extrinsic = np.eye(4)
+            vis.get_view_control().convert_from_pinhole_camera_parameters(camera)
+            breakpoint()
+            frame_image = vis.capture_screen_float_buffer()
+            frames.append((np.asarray(frame_image) * 255).astype(np.uint8))
+
+        vis.destroy_window()
+        gif_path = "~/scene.gif"
+        imageio.mimsave(gif_path, frames, duration=1.0)
+        return frames
 
 def main(args):
-    sg = SceneGenerator(args.ckpt_path, sensor_info_path=args.sensor_info_path)
+    sg = SceneGenerator(args.ckpt, sensor_info_path=args.sensor_info_path)
     with open(args.data_path, 'rb') as f:
         data = pickle.load(f)
 
+    img_multi = {key: data[key][0] for key in CAMERA_KEYS}
 
     img_test = data['FRONT_CAMERA'][2]
-    depth = sg.predict_depth(img_test)
-
-    if not args.dryrun:
-        print("Loading models, segmenting image, predicting depth...")
-        sg.set_image(img_test)
-        sg.add_mask_index(0)
-        print("Done")
 
     breakpoint()
     return
@@ -193,7 +333,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # parser.add_argument("--ckpt-path", type=str, default='checkpoints/13000')
-    parser.add_argument("--ckpt-path", type=str, default='./checkpoints/sfm')
+    parser.add_argument("--ckpt", type=str, default='vinvino02/glpn-nyu')
     parser.add_argument("--data-path", type=str, default='sample-data-scattered.p')
     parser.add_argument('--sensor-info-path', type=str, default='sensor_info.p')
     parser.add_argument("--dryrun", action="store_true", default=False, help="Do not automatically load SAM and segment images")
