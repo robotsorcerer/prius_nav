@@ -7,3 +7,5 @@ argparse
 path
 open3d
 numpy
+transformers
+rembg

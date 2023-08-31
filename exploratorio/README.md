@@ -19,12 +19,6 @@ First, you must download the pretrained models for image segmentation (Segment
 Anything) and depth prediction (SfM). Download the file `models/sg_data.tar` from
 the OneDrive, place it in the workspace root, and extract it.
 
-Then, from the workspace root, run
-
-```bash
-./src/prius_autonav/exploratorio/setup.bash
-```
-
 Next, install the python dependencies listed in `exploratorio/scene_generation_requirements.txt`.
 
 We are now ready to run the scene generation script. Be sure to source the ROS setup, and execute
@@ -37,38 +31,30 @@ This will initialize some python objects and open up PDB. Enter the command `int
 enter a Python shell, where we will interact with the scene generation object. This object
 is the variable `sg` that has been initialized.
 
-Running `sg.preview()` will render two images side by side: one showing the
-camera view with the masked pixels highlighted, and the other showing the predicted depth map
-for the same image. The pointcloud will be generated for the highlighted pixels and using the
-shown depth map.
+The shell also has variables `img_test` and `img_multi`, containing image data from the car's
+sensors. The `img_test` image is simply an image from the car's front sensor, whereas `img_multi`
+is a dictionary from keys in `CAMERA_KEYS` to images corresponding to the relevant camera.
+Additionally, the `data` is a dictionary mapping from `CAMERA_KEYS` to a sequence of images from
+the corresponding camera.
 
-To generate the pointcloud and visualize it, close the preview image and run
+You can use `sg.preview(img)` for a single image `img` to view side-by-side depictions of
+the 'raw' image and the depth prediction from the model. The depth prediction will by default
+'mask out' the pixels identified as background (and therefore only show depth for the predicted
+obstacles). To show the depth prediction for the whole image, run `sg.preview(img, mask=False)`.
 
-```python
-sg.scene()
-```
+To simply generate depth estimates without visualizing them, run `sg.masked_depth_image(img)` for
+an image `img`. This returns the depth prediction as a numpy array.
 
-This will launch an interactive 3D pointcloud visualizer, which you can rotate with the mouse.
-Press `q` to exit the pointcloud visualizer. 
+You can use `sg.scene(imgs)` called with
+a dictionary of images (like `img_multi`) to generate the pointcloud estimated from the camera
+observations, which will appear in an interactive visualizer. Press `q` within the visualizer
+to quit. You can also use `sg.scene_anim(imgs)`
+called with a dictionary of images (like `img_multi`) to generate a animation of the rendered
+pointcloud, which will be saved to `scene.gif`.
 
-You can add/remove objects to the pointcloud by specifying their mask indices. For example,
-you may run
-
-```python
-sg.add_mask_index(4)
-sg.preview()
-```
-
-This will add the object represent by mask index 4 and preview the resulting masked pixels.
-In this case, this corresponds to adding the pixels corresponding to the road.
-Running `sg.scene()` will show the corresponding pointcloud.
-
-You can also explicitly set the mask indices you want to view with
-
-```python
-sg.set_mask_indices([0, 4]) # any list of indices you want
-```
-
+To simply generate a pointcloud without visualizing it, run `sg.multi_masked_pointcloud(imgs)` for a
+dictionary of images (like `img_multi`). This returns a list of pointclouds (one for each camera).
+The points are positioned relative to the car's local frame.
 
 ## Online Replay Buffer
 After having launched the `car_demo` as outlined above,

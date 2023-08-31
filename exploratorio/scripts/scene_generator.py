@@ -61,6 +61,8 @@ class SceneGenerator:
     Params:
         checkpoint (str): The checkpoint for the DPT transformer depth predictor
         sensor_info_path (str): Path where the camera sensor data is stored
+        depth_scale (float): Proportional depth prediction scaling
+        depth_mode (str): Transformation of raw depth prediction (linear, square, cubic, exp)
         depth_thresh (int): Threshold used to extract objects from alpha channel of foreground prediction
         depth_inf (float): Maximum depth prediction, used mainly for visualization
         discrete_img (bool): Whether to use integer or floating point representation of image for depth prediction
@@ -71,6 +73,8 @@ class SceneGenerator:
         self,
         checkpoint: str = 'vinvino02/glpn-nyu',
         sensor_info_path: str = 'sensor_info.p',
+        depth_scale: float = 1.0,
+        depth_mode: str = 'linear',
         depth_thresh: int = 50,
         depth_inf: float = 5.0,
         discrete_img: bool = False,
@@ -93,6 +97,8 @@ class SceneGenerator:
         self.img = None
         self.depth = None
 
+        self.depth_scale = depth_scale
+        self.depth_mode = depth_mode
         self.depth_thresh = depth_thresh
         self.depth_inf = depth_inf
 
@@ -239,6 +245,13 @@ class SceneGenerator:
         pixel_coords = np.argwhere(mask > self.depth_thresh)
         img_t = self.preprocess_img(img)
         depth = self.predict_depth(img_t)
+        if self.depth_mode == 'square':
+            depth = depth ** 2
+        elif self.depth_mode == 'cubic':
+            depth = depth **3
+        elif self.depth_mode == 'exp':
+            depth = torch.exp(depth)
+        depth *= self.depth_scale
         if inv_depth:
             depth = self.depth_inf - depth
         points = (self.pixel_coords_to_3d_coords(pixel_coords, depth_map=depth, flat=flat)
