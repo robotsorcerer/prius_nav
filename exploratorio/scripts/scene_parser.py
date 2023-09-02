@@ -6,10 +6,12 @@ import rospy
 import pickle
 import logging
 import numpy as np
-from os.path import join 
+from os.path import join
 from dataclasses import dataclass
 import laser_geometry.laser_geometry as lg
 from sensor_msgs.msg import CameraInfo, Image, CompressedImage, LaserScan, PointCloud2
+from nav_msgs.msg import Odometry
+from prius_msgs.msg import Control
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 from typing import List, Optional, FrozenSet, Set
 
@@ -43,6 +45,9 @@ class SensorSource(IntFlag):
     FRONT_RIGHT_LASER = auto()
     CENTER_LASER = auto()
     ALL_LASERS = FRONT_LEFT_LASER | FRONT_RIGHT_LASER | CENTER_LASER
+
+    ODOMETRY = auto()
+    CONTROLS = auto()
 
     ALL_SENSORS = ALL_CAMERAS | ALL_LASERS
 
@@ -190,9 +195,14 @@ class SceneParser():
         cam_subs = self.image_subscribers()
         laser_subs = self.scan_subs()
 
-        self.topics = [sub.name for sub in cam_subs + laser_subs]
+        odo_sub = Subscriber("/base_pose_ground_truth", Odometry)
+        ctrl_sub = Subscriber("/prius", Control)
 
-        self.approx_ts = ApproximateTimeSynchronizer(cam_subs + laser_subs, 10, slop=0.51)
+        all_subs = cam_subs + laser_subs + [odo_sub] #, ctrl_sub]
+
+        self.topics = [sub.name for sub in all_subs]
+
+        self.approx_ts = ApproximateTimeSynchronizer(all_subs, 10, slop=0.51)
         self.approx_ts.registerCallback(self.cb)
 
         rospy.spin()
@@ -211,14 +221,14 @@ class SceneParser():
             CENTER_LASER
         """
         front_camera, back_camera, left_camera, right_camera = subscribers[:4]
-        frontleft_laser, frontright_laser, center_laser = subscribers[4:]
+        frontleft_laser, frontright_laser, center_laser = subscribers[4:7]
+        odo = subscribers[7]
+        # odo, ctrl = subscribers[7:]
 
         frontleft_cloud = self.laser_projector.projectLaser(frontleft_laser)
         frontright_cloud = self.laser_projector.projectLaser(frontright_laser)
         center_cloud = self.laser_projector.projectLaser(center_laser)
 
-        print(front_camera, "front_camera")
-        print() 
         self.msg_data[SensorSource.FRONT_CAMERA] = front_camera
         self.msg_data[SensorSource.BACK_CAMERA] = back_camera
         self.msg_data[SensorSource.LEFT_CAMERA] = left_camera
@@ -227,6 +237,9 @@ class SceneParser():
         self.msg_data[SensorSource.FRONT_LEFT_LASER] = frontleft_cloud
         self.msg_data[SensorSource.FRONT_RIGHT_LASER] = frontright_cloud
         self.msg_data[SensorSource.CENTER_LASER] = center_cloud
+
+        self.msg_data[SensorSource.ODOMETRY] = odo.pose.pose
+        # self.msg_data[SensorSource.CONTROLS] = ctrl
         self.loaded_data = True
 
 if __name__ == "__main__":

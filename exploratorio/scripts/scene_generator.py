@@ -9,9 +9,11 @@ import open3d as o3d
 import pickle
 import torch
 
-from rembg import remove
+from rembg import remove, new_session
 from transformers import AutoModelForDepthEstimation
 from typing import List
+
+from tqdm import tqdm
 
 from scene_parser import SensorSource, SensorCollection, ros_camera_intrinsics
 
@@ -80,6 +82,7 @@ class SceneGenerator:
         discrete_img: bool = False,
         flip_colors: bool = True,
         flip_x: bool = False,
+        icp_threshold: float = 0.02,
     ):
         self.checkpoint = checkpoint
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -92,7 +95,7 @@ class SceneGenerator:
 
         self.intrinsics_inv = torch.tensor(self.intrinsics_inv).to(self.device).float()
 
-        self.depth_model = AutoModelForDepthEstimation.from_pretrained(checkpoint)
+        self.depth_model = AutoModelForDepthEstimation.from_pretrained(checkpoint).to(self.device)
 
         self.img = None
         self.depth = None
@@ -106,16 +109,22 @@ class SceneGenerator:
         self.flip_colors = flip_colors
         self.flip_x = flip_x
 
+        self.seg_session = new_session()
+
+        self.icp_threshold = icp_threshold
+
     def preprocess_img(self, img: np.ndarray) -> torch.Tensor:
         """
         Preprocess numpy image matrix for compatibility with depth prediction network.
         """
+        while len(img.shape) < 4:
+            img = np.expand_dims(img, 0)
         if self.flip_colors:
-            img = img[:, :, [2, 1, 0]]
-        img_t = torch.Tensor(img).permute(2, 0, 1).squeeze().unsqueeze(0)
+            img = img[:, :, :, [2, 1, 0]]
+        img_t = torch.Tensor(img).permute(0, 3, 1, 2)
         if self.discrete_img:
             return img_t
-        return img_t / 255.0
+        return (img_t / 255.0).to(self.device)
 
     def predict_depth(self, img):
         """
@@ -127,7 +136,8 @@ class SceneGenerator:
         Returns:
             depth (tensor): Real-valued depth map, dimensions [B, W, H]
         """
-        return self.depth_model(img).predicted_depth
+        with torch.no_grad():
+            return self.depth_model(img).predicted_depth
 
     def predict_mask(self, img):
         """
@@ -139,7 +149,7 @@ class SceneGenerator:
         Returns:
             mask (ndarray): Integer-valued alpha channel, lower values indicating background.
         """
-        return remove(img)[:, :, -1]
+        return remove(img, session=self.seg_session)[:, :, -1]
 
     def masked_depth_image(self, img):
         """
@@ -258,7 +268,7 @@ class SceneGenerator:
                   .detach().cpu().numpy())
         return tensor_to_pointcloud(points)
 
-    def multi_masked_pointcloud(self, imgs, inv_depth=False):
+    def multi_masked_pointcloud(self, imgs, inv_depth=False, flat=False):
         """
         Returns a list of point clouds corresponding to observations from multiple cameras
         (see `self.masked_pointcloud`).
@@ -280,6 +290,12 @@ class SceneGenerator:
             R = pc.get_rotation_matrix_from_xyz((0, theta, 0))
             pc = copy.deepcopy(pc).translate(xyz).rotate(R, center=xyz)
             pcs.append(pc)
+
+        if flat:
+            pc = o3d.geometry.PointCloud()
+            for p in pcs:
+                pc.points.extend(p.points)
+            return pc
         return pcs
 
     def scene(self, img, flat=False, inv_depth=False):
@@ -330,6 +346,73 @@ class SceneGenerator:
         imageio.mimsave(gif_path, frames, duration=1.0)
         return frames
 
+    def odometry(self, video_data, start_frame=0, max_frames=10, frame_stride=1):
+        ti = start_frame
+        tf = min(start_frame + max_frames + 1, len(video_data['FRONT_CAMERA']))
+        obs_data_n = {
+            key: np.array(video_data[key])[ti:tf:frame_stride].reshape(-1, 800, 800, 3)
+            for key in CAMERA_KEYS
+        }
+        obs_data = {
+            key: self.preprocess_img(obs_data_n[key]) for key in obs_data_n
+        }
+
+        # [t, cam, C, W, H]
+        # obs_data_n = np.stack([obs_data_n[k] for k in obs_data], axis=1)
+        obs_data = torch.stack([obs_data[k] for k in obs_data], axis=1)
+
+        H = obs_data.shape[0]
+
+        transforms = []
+
+        pc_tm1 = self.multi_masked_pointcloud({k: obs_data_n[k][0] for k in CAMERA_KEYS}, flat=True)
+        for t in tqdm(range(1, H)):
+            pc_t = self.multi_masked_pointcloud({k: obs_data_n[k][t] for k in CAMERA_KEYS}, flat=True)
+            transforms.append(o3d.pipelines.registration.registration_icp(
+                pc_tm1, pc_t, self.icp_threshold, np.eye(4),
+                o3d.pipelines.registration.TransformationEstimationPointToPoint()
+            ).transformation)
+            pc_tm1 = pc_t
+
+        return transforms
+
+    def preview_odometry(self, video_data, start_frame=0, max_frames=10, frame_stride=1):
+        ti = start_frame
+        tf = min(start_frame + max_frames + 1, len(video_data['position']))
+
+        gt_odo = np.array(video_data['position'])[ti:tf]
+
+        fig, axs = plt.subplots(1, 2)
+        self.plot_trajectory(axs[0], gt_odo)
+        axs[0].set_title("Ground truth positions")
+
+        transforms = self.odometry(
+            video_data,
+            start_frame=start_frame,
+            max_frames=max_frames,
+            frame_stride=frame_stride
+        )
+        states = [np.eye(4)[-1]] # start at origin
+        for T in transforms:
+            states.append(T @ states[-1])
+
+        pos_all = np.stack(states)
+        pos_all[:, 2] *= -1
+        positions = pos_all[:, [1, 2]]
+        self.plot_trajectory(axs[1], positions)
+        axs[1].set_title("Predicted positions")
+        fig.tight_layout()
+        fig.show()
+
+        return positions, gt_odo, pos_all
+
+    def plot_trajectory(self, ax, traj):
+        ax.plot(traj[:, 0], traj[:, 1])
+        ax.scatter([traj[0, 0]], [traj[0, 1]], marker='o', label='Start')
+        ax.scatter([traj[-1, 0]], [traj[-1, 1]], marker='x', label='End')
+        ax.legend()
+
+
 def main(args):
     sg = SceneGenerator(args.ckpt, sensor_info_path=args.sensor_info_path)
     with open(args.data_path, 'rb') as f:
@@ -338,6 +421,9 @@ def main(args):
     img_multi = {key: data[key][0] for key in CAMERA_KEYS}
 
     img_test = data['FRONT_CAMERA'][2]
+
+    with open(args.video_data_path, 'rb') as f:
+        video_data = pickle.load(f)
 
     breakpoint()
     return
@@ -348,6 +434,7 @@ if __name__ == "__main__":
     # parser.add_argument("--ckpt-path", type=str, default='checkpoints/13000')
     parser.add_argument("--ckpt", type=str, default='vinvino02/glpn-nyu')
     parser.add_argument("--data-path", type=str, default='sample-data-scattered.p')
+    parser.add_argument("--video-data-path", type=str, default='data_dump.p')
     parser.add_argument('--sensor-info-path', type=str, default='sensor_info.p')
     parser.add_argument("--dryrun", action="store_true", default=False, help="Do not automatically load SAM and segment images")
 

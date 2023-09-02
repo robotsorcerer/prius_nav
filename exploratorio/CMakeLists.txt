@@ -166,6 +166,8 @@ catkin_install_python(PROGRAMS
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/camera_replay.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    scripts/simple_dataset.py
+    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/sfm_trainer.py
     DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     scripts/scene_generator.py
