@@ -162,9 +162,16 @@ class Landmarker(SceneParser):
                     )
                     rospy.loginfo(f"Published landmark: {landmark_tf.child_frame_id}")
 
+            for landmark_tf in self.landmark_tf_msgs:
+                trans = landmark_tf.transform.translation
+                parent = landmark_tf.header.frame_id
+                landmark_centroid = f"({trans.x:.2f}, {trans.y:.2f}, {trans.z:.2f})"
+                rospy.loginfo(
+                    f"{landmark_tf.child_frame_id} at {landmark_centroid}, parent {parent}"
+                )
+
         for landmark_tf in self.landmark_tf_msgs:
             br = tf2_ros.StaticTransformBroadcaster()
-            rospy.loginfo(landmark_tf.child_frame_id)
             br.sendTransform(landmark_tf)
 
 

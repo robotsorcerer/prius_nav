@@ -14,6 +14,18 @@ source install/setup.bash
 roslaunch src/prius_autonav/car_demo/launch/demo.launch
 ```
 
+## Landmark Discovery
+The `landmarker.py` script provides a ROS node that identifies landmarks
+from the collection of camera observations. The node creates a ROS tf tree of
+frames corresponding to the centroids of the landmarks. Landmark frames from a
+given scene form a chain in the tf tree.
+
+To launch the node, run
+
+```bash
+rosrun exploratorio landmarker.py
+```
+
 ## Point Cloud Generation
 First, you must download the pretrained models for image segmentation (Segment
 Anything) and depth prediction (SfM). Download the file `models/sg_data.tar` from
