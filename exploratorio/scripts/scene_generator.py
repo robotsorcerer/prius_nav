@@ -5,6 +5,7 @@ import copy
 import cv2
 import dataclasses
 import imageio
+import itertools
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -55,6 +56,7 @@ class Landmark:
     def size(self):
         return self.pointcloud.shape[0]
 
+
 p2p = o3d.pipelines.registration.TransformationEstimationPointToPlane
 
 def tensor_to_pointcloud(points: np.ndarray) -> o3d.geometry.PointCloud:
@@ -72,6 +74,15 @@ def camera_orientation_matrix(pos, angle, axis):
     return mat
 
 def make_frame(loc):
+    """
+    Helper function for creating coordinate frame meshes for visualization
+
+    Params:
+        loc (ndarray): position of coordinate frame
+
+    Returns:
+        TriangleMesh: mesh representing a depiction of coordinate axes at loc
+    """
     frame = o3d.geometry.TriangleMesh.create_coordinate_frame()
     frame.translate(loc)
     return frame
@@ -87,10 +98,17 @@ class SceneGenerator:
         depth_mode (str): Transformation of raw depth prediction (linear, square, cubic, exp)
         depth_thresh (int): Threshold used to extract objects from alpha channel of foreground prediction
         depth_inf (float): Maximum depth prediction, used mainly for visualization
+        downsample (float): Voxel size for voxel downsampling of pointclouds (None for no downsampling)
         discrete_img (bool): Whether to use integer or floating point representation of image for depth prediction
         flip_colors (bool): Whether to inverse the order of color channels
         flip_x (bool): Whether to flip the direction of the x axis (unused for now)
+        icp_threshold (float): Convergence threshold parameter for ICP registration
+        robust_kernel (bool): Whether to perform ICP with IWLS regression using a robust kernel
+        tukey_sigma (float): Lengthscale parameter for the Tukey kernel for robust ICP
+        num_clusters (int): Number of clusters to model in pointcloud clustering
+        max_seg_objects (int): Maximum number of segmented pointclouds to consider for a given frame
     """
+
     def __init__(
         self,
         checkpoint: str = 'vinvino02/glpn-nyu',
@@ -108,6 +126,7 @@ class SceneGenerator:
         tukey_sigma: float = 0.1,
         num_clusters: int = 6,
         max_seg_objects: int = 4,
+        min_landmark_size: int = 90,
     ):
         self.checkpoint = checkpoint
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -150,6 +169,7 @@ class SceneGenerator:
 
         self.num_clusters = num_clusters
         self.max_seg_objects = max_seg_objects
+        self.min_landmark_size = min_landmark_size
 
     def use_robust_kernel(self, opt: bool = True):
         self.robust_kernel = opt
@@ -297,6 +317,8 @@ class SceneGenerator:
     def masked_pointcloud(self, img, flat=False, inv_depth=False) -> List[o3d.geometry.PointCloud]:
         """
         Returns a point cloud from obstacle pixels in `img`.
+        When `self.downsample` is not `None`, the pointclouds will be downsampled
+        via voxel downsampling to a resolution of `self.downsample`.
 
         When `flat` is `True`, the depth map is ignored.
 
@@ -310,7 +332,7 @@ class SceneGenerator:
         if self.depth_mode == 'square':
             depth = depth ** 2
         elif self.depth_mode == 'cubic':
-            depth = depth **3
+            depth = depth ** 3
         elif self.depth_mode == 'exp':
             depth = torch.exp(depth)
         depth *= self.depth_scale
@@ -330,10 +352,12 @@ class SceneGenerator:
 
         Params:
             imgs (dict): Dictionary mapping camera keys (see CAMERA_KEYS) to image pixels.
+            inv_depth (bool): Deprecated, kept for debugging (should be False)
+            separate (bool): Deprecated, kept for debugging (should be False)
 
         Returns:
-            pcs (List[o3d.geometry.PointCloud]): point cloud for each camera view, rotated
-            and translated relative to the camera pose with respect to the car's local frame.
+            pc (o3d.geometry.PointCloud): point cloud comprised of observations from all cameras,
+            given with respect to the local frame.
         """
         pcs = []
         for camera_key in imgs:
@@ -354,6 +378,18 @@ class SceneGenerator:
         return pcs
 
     def find_landmarks(self, imgs, pc=None):
+        """
+        Identifies landmarks (i.e., large objects) in the current multi-camera observation.
+
+        Params:
+            imgs (dict): Dictionary of images mapping CAMERA_SOURCE to RGB image from which to
+            find landmarks.
+            pc (o3d.geometry.PointCloud, None): when not `None`, this pointcloud is searched
+            for landmarks as opposed to the images in `imgs`.
+
+        Returns:
+            List[Landmark]: list of up to `self.max_seg_objects` landmarks, filtered by size.
+        """
         if pc is None:
             pc = self.multi_masked_pointcloud(imgs, separate=False)
         clusterer = KMeans(self.num_clusters)
@@ -363,7 +399,10 @@ class SceneGenerator:
         counts = [np.sum(labels == i) for i in unique_labels]
         # sort clusters in decreasing order of point count
         largest_labels = sorted(zip(unique_labels, counts), key=lambda x: -x[-1])
-        largest_labels = [l[0] for l in largest_labels[:self.max_seg_objects]]
+        largest_labels = list(
+            itertools.takewhile(lambda x: x[-1] >= self.min_landmark_size, largest_labels)
+        )
+        largest_labels = [label[0] for label in largest_labels[:self.max_seg_objects]]
         landmarks = []
         for label in largest_labels:
             pointcloud = all_points[labels == label]
@@ -387,7 +426,7 @@ class SceneGenerator:
             else:
                 o3d.visualization.draw_geometries([frame] + pcs)
         else:
-            pcs = self.masked_pointcloud(img, flat=flat, inv_depth=inv_depth)
+            pcs = self.masked_pointcloud(img, inv_depth=inv_depth)
             o3d.visualization.draw_geometries([frame, pcs])
 
     def scene_anim(self, imgs, inv_depth=False, n_frames=100):
@@ -446,7 +485,10 @@ class SceneGenerator:
 
         pc_tm1 = self.multi_masked_pointcloud({k: obs_data_n[k][0] for k in CAMERA_KEYS}, flat=True)
         for t in tqdm(range(1, H)):
-            pc_t = self.multi_masked_pointcloud({k: obs_data_n[k][t] for k in CAMERA_KEYS}, flat=True)
+            pc_t = self.multi_masked_pointcloud(
+                {k: obs_data_n[k][t] for k in CAMERA_KEYS},
+                flat=True
+            )
             pc_t.estimate_normals()
             transforms.append(o3d.pipelines.registration.registration_icp(
                 pc_tm1, pc_t, self.icp_threshold, np.eye(4),
@@ -603,7 +645,12 @@ def main(args):
     with open(args.video_data_path, 'rb') as f:
         video_data = pickle.load(f)
 
-    data_dict = {'img_multi': img_multi, 'img_test': img_test, 'video_data': video_data, 'data': data}
+    data_dict = {
+        'img_multi': img_multi,
+        'img_test': img_test,
+        'video_data': video_data,
+        'data': data
+    }
 
     job = {
         'analyze-depth': depth_job,
@@ -627,6 +674,7 @@ def depth_job(sg, args, data):
 
 def scene_job(sg, args, data):
     return sg.scene(data['img_multi'], separate=False)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
