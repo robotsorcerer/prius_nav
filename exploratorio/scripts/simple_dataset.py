@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import datetime
 import os
 import cv2
@@ -103,8 +104,18 @@ class SimpleDatasetBuilder(SceneParser):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--compress", action='store_true')
+    parser.add_argument("--capacity", type=int, default=30_000)
+    args = parser.parse_args()
     rospy.init_node("data_dumper", anonymous=True, disable_signals=True)
-    scene_parser = SimpleDatasetBuilder(30_000, 30, persist_period=30, verbose=True)
+    scene_parser = SimpleDatasetBuilder(
+        args.capacity,
+        30,
+        persist_period=30,
+        verbose=True,
+        compressed_imgs=args.compress
+    )
 
     try:
         while not rospy.is_shutdown():

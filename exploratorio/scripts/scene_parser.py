@@ -107,6 +107,9 @@ class SceneParser():
         self.verbose = verbose
         self.basetopic = "/prius"
         self.suffix_cam_topic = "_camera/image_raw"
+        # Might need to remove
+        if compressed_imgs:
+            self.suffix_cam_topic += "/compressed"
         self.suffix_laser_topic = "_laser/scan"
         self.topics = []
 

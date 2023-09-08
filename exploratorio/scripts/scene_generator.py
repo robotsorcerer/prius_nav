@@ -2,7 +2,10 @@
 
 import argparse
 import copy
+import cv2
+import dataclasses
 import imageio
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
@@ -10,8 +13,9 @@ import pickle
 import torch
 
 from rembg import remove, new_session
+from sklearn.cluster import KMeans
 from transformers import AutoModelForDepthEstimation
-from typing import List
+from typing import List, Optional
 
 from tqdm import tqdm
 
@@ -42,6 +46,17 @@ CAMERA_LINKS = {
 
 CAMERA_KEYS = list(CAMERA_LINKS.keys())
 
+@dataclasses.dataclass
+class Landmark:
+    centroid: np.ndarray
+    pointcloud: np.ndarray
+
+    @property
+    def size(self):
+        return self.pointcloud.shape[0]
+
+p2p = o3d.pipelines.registration.TransformationEstimationPointToPlane
+
 def tensor_to_pointcloud(points: np.ndarray) -> o3d.geometry.PointCloud:
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
@@ -55,6 +70,11 @@ def camera_orientation_matrix(pos, angle, axis):
     mat[2, 0] = np.cos(angle)
     mat[2, 2] = -np.sin(angle)
     return mat
+
+def make_frame(loc):
+    frame = o3d.geometry.TriangleMesh.create_coordinate_frame()
+    frame.translate(loc)
+    return frame
 
 class SceneGenerator:
     """
@@ -79,10 +99,15 @@ class SceneGenerator:
         depth_mode: str = 'linear',
         depth_thresh: int = 50,
         depth_inf: float = 5.0,
+        downsample: Optional[float] = 0.08,
         discrete_img: bool = False,
         flip_colors: bool = True,
         flip_x: bool = False,
         icp_threshold: float = 0.02,
+        robust_kernel: bool = True,
+        tukey_sigma: float = 0.1,
+        num_clusters: int = 6,
+        max_seg_objects: int = 4,
     ):
         self.checkpoint = checkpoint
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -105,6 +130,8 @@ class SceneGenerator:
         self.depth_thresh = depth_thresh
         self.depth_inf = depth_inf
 
+        self.downsample = downsample
+
         self.discrete_img = discrete_img
         self.flip_colors = flip_colors
         self.flip_x = flip_x
@@ -112,11 +139,35 @@ class SceneGenerator:
         self.seg_session = new_session()
 
         self.icp_threshold = icp_threshold
+        self.robust_kernel = robust_kernel
+        self.tukey_sigma = tukey_sigma
+        if self.robust_kernel:
+            self.icp_model = lambda: p2p(
+                o3d.pipelines.registration.TukeyLoss(k=self.tukey_sigma)
+            )
+        else:
+            self.icp_model = lambda: p2p()
+
+        self.num_clusters = num_clusters
+        self.max_seg_objects = max_seg_objects
+
+    def use_robust_kernel(self, opt: bool = True):
+        self.robust_kernel = opt
+        if self.robust_kernel:
+            self.icp_model = lambda: p2p(
+                o3d.pipelines.registration.TukeyLoss(k=self.tukey_sigma)
+            )
+        else:
+            self.icp_model = lambda: p2p()
 
     def preprocess_img(self, img: np.ndarray) -> torch.Tensor:
         """
         Preprocess numpy image matrix for compatibility with depth prediction network.
         """
+        while len(img.shape) < 2:
+            img = np.expand_dims(img, 0)
+        if img.shape == 2:
+            img = np.stack([cv2.imdecode(im, cv2.IMREAD_UNCHANGED) for im in img])
         while len(img.shape) < 4:
             img = np.expand_dims(img, 0)
         if self.flip_colors:
@@ -212,6 +263,7 @@ class SceneGenerator:
         fig.show()
         return fig
 
+    @torch.no_grad()
     def pixel_coords_to_3d_coords(self, pixel_coords, depth_map=None, flat=False):
         """
         Transforms a list of 2D pixel coordinates to 3D coordinates using a depth map.
@@ -266,9 +318,12 @@ class SceneGenerator:
             depth = self.depth_inf - depth
         points = (self.pixel_coords_to_3d_coords(pixel_coords, depth_map=depth, flat=flat)
                   .detach().cpu().numpy())
-        return tensor_to_pointcloud(points)
+        pc = tensor_to_pointcloud(points)
+        if self.downsample is None:
+            return pc
+        return pc.voxel_down_sample(voxel_size=self.downsample)
 
-    def multi_masked_pointcloud(self, imgs, inv_depth=False, flat=False):
+    def multi_masked_pointcloud(self, imgs, inv_depth=False, separate=False):
         """
         Returns a list of point clouds corresponding to observations from multiple cameras
         (see `self.masked_pointcloud`).
@@ -291,22 +346,46 @@ class SceneGenerator:
             pc = copy.deepcopy(pc).translate(xyz).rotate(R, center=xyz)
             pcs.append(pc)
 
-        if flat:
+        if not separate:
             pc = o3d.geometry.PointCloud()
             for p in pcs:
                 pc.points.extend(p.points)
             return pc
         return pcs
 
-    def scene(self, img, flat=False, inv_depth=False):
+    def find_landmarks(self, imgs, pc=None):
+        if pc is None:
+            pc = self.multi_masked_pointcloud(imgs, separate=False)
+        clusterer = KMeans(self.num_clusters)
+        all_points = np.array(pc.points)
+        labels = clusterer.fit_predict(all_points)
+        unique_labels = np.unique(labels)
+        counts = [np.sum(labels == i) for i in unique_labels]
+        # sort clusters in decreasing order of point count
+        largest_labels = sorted(zip(unique_labels, counts), key=lambda x: -x[-1])
+        largest_labels = [l[0] for l in largest_labels[:self.max_seg_objects]]
+        landmarks = []
+        for label in largest_labels:
+            pointcloud = all_points[labels == label]
+            centroid = np.mean(pointcloud, axis=0)
+            landmarks.append(Landmark(centroid, pointcloud))
+        return landmarks
+
+    def scene(self, img, separate=False, inv_depth=False):
         """
         Generates pointclouds from input images
         and launches a 3D visualization of these pointclouds.
         """
         frame = o3d.geometry.TriangleMesh.create_coordinate_frame()
         if isinstance(img, dict):
-            pcs = self.multi_masked_pointcloud(img, inv_depth=inv_depth)
-            o3d.visualization.draw_geometries([frame] + pcs)
+            pcs = self.multi_masked_pointcloud(img, separate=separate, inv_depth=inv_depth)
+            if not separate:
+                landmarks = self.find_landmarks(img, pc=pcs)
+                centroids = [landmark.centroid for landmark in landmarks]
+                centroid_frames = [make_frame(centroid) for centroid in centroids]
+                o3d.visualization.draw_geometries([frame, pcs] + centroid_frames)
+            else:
+                o3d.visualization.draw_geometries([frame] + pcs)
         else:
             pcs = self.masked_pointcloud(img, flat=flat, inv_depth=inv_depth)
             o3d.visualization.draw_geometries([frame, pcs])
@@ -368,13 +447,24 @@ class SceneGenerator:
         pc_tm1 = self.multi_masked_pointcloud({k: obs_data_n[k][0] for k in CAMERA_KEYS}, flat=True)
         for t in tqdm(range(1, H)):
             pc_t = self.multi_masked_pointcloud({k: obs_data_n[k][t] for k in CAMERA_KEYS}, flat=True)
+            pc_t.estimate_normals()
             transforms.append(o3d.pipelines.registration.registration_icp(
                 pc_tm1, pc_t, self.icp_threshold, np.eye(4),
-                o3d.pipelines.registration.TransformationEstimationPointToPoint()
+                self.icp_model()
             ).transformation)
             pc_tm1 = pc_t
 
         return transforms
+
+    def integrate_transforms(self, transforms, x0=np.eye(4)[-1], alpha=1.0):
+        states = [x0]
+        trans = transforms[0]
+        for T in transforms:
+            trans = (1 - alpha) * trans + alpha * T
+            states.append(trans @ states[-1])
+        x = np.stack(states)
+        x[:, 2] *= -1
+        return x[:, [1, 2]], x
 
     def preview_odometry(self, video_data, start_frame=0, max_frames=10, frame_stride=1):
         ti = start_frame
@@ -392,19 +482,20 @@ class SceneGenerator:
             max_frames=max_frames,
             frame_stride=frame_stride
         )
-        states = [np.eye(4)[-1]] # start at origin
-        for T in transforms:
-            states.append(T @ states[-1])
 
-        pos_all = np.stack(states)
-        pos_all[:, 2] *= -1
-        positions = pos_all[:, [1, 2]]
+        positions, pos_all = self.integrate_transforms(transforms)
+
         self.plot_trajectory(axs[1], positions)
         axs[1].set_title("Predicted positions")
         fig.tight_layout()
         fig.show()
 
-        return positions, gt_odo, pos_all
+        return {
+            'positions': positions,
+            'gt': gt_odo,
+            'positions_all': pos_all,
+            'transforms': transforms,
+        }
 
     def plot_trajectory(self, ax, traj):
         ax.plot(traj[:, 0], traj[:, 1])
@@ -412,6 +503,93 @@ class SceneGenerator:
         ax.scatter([traj[-1, 0]], [traj[-1, 1]], marker='x', label='End')
         ax.legend()
 
+    @torch.no_grad()
+    def analyze_depth(
+        self,
+        data_path='data_dump_still.p',
+        maxlen=100,
+        start_frame=0,
+        batch_size=16,
+        seed=42,
+        num_pixels=100,
+        bootstrap_samples=100,
+    ):
+        with open(data_path, 'rb') as f:
+            data = pickle.load(f)
+
+        rng = np.random.default_rng(seed=seed)
+        pixel_coords = rng.choice(800 * 300, size=num_pixels, replace=False)
+        pixel_coords = np.stack([[c // 800, c % 800] for c in pixel_coords])
+
+        end_frame = min(start_frame + maxlen, len(data[CAMERA_KEYS[0]]))
+
+        obs_data = {
+            key: list(data[key])[start_frame:end_frame] for key in CAMERA_KEYS
+        }
+
+        N = len(obs_data[CAMERA_KEYS[0]])
+        num_batches = int(math.ceil(N / batch_size))
+
+        pixel_depths = {
+            key: [] for key in obs_data
+        }
+
+        for i in tqdm(range(num_batches)):
+            start = i * batch_size
+            end = min((i + 1) * batch_size, N)
+            batches = {
+                key: np.stack([
+                    cv2.imdecode(x, cv2.IMREAD_UNCHANGED)
+                    for x in obs_data[key][start:end]
+                ])
+                for key in CAMERA_KEYS
+            }
+            batches = {
+                key: self.preprocess_img(batches[key])
+                for key in batches
+            }
+            depths = {
+                key: self.predict_depth(batches[key]) for key in batches
+            }
+            _pixel_depths = {
+                key: depths[key][:, pixel_coords[:, 0], pixel_coords[:, 1]].detach().cpu().numpy()
+                for key in depths
+            }
+            for key in pixel_depths:
+                pixel_depths[key].extend(_pixel_depths[key])
+
+        fig, axs = plt.subplots(len(CAMERA_KEYS), 2)
+        for (i, key) in enumerate(pixel_depths.keys()):
+            # Plot best and worst case fluctuations
+            pds = np.array(pixel_depths[key])
+            pd_stds = np.std(pds, axis=0)
+            best_idx = np.argmin(pd_stds)
+            worst_idx = np.argmax(pd_stds)
+            axs[i, 0].plot(pds[:, best_idx], label='Pixel with least depth variance')
+            axs[i, 0].plot(pds[:, worst_idx], label='Pixel with largest depth variance')
+            axs[i, 0].legend()
+            axs[i, 0].set_ylabel(f"{key}\nEstimated Depth")
+
+            # Bootstrap estimate of fluctuation
+            bootstrap_vals = []
+            for _ in range(bootstrap_samples):
+                bootstrap_indices = rng.choice(num_pixels, size=num_pixels, replace=True)
+                bootstrap_stds = pd_stds[bootstrap_indices]
+                bootstrap_vals.append(np.mean(bootstrap_stds))
+
+            axs[i, 1].hist(bootstrap_vals, density=True)
+            axs[i, 1].set_ylabel("Probability Density")
+
+        axs[-1, 0].set_xlabel('Time')
+        axs[0, 0].set_title("Fluctation of Depth Estimates")
+        axs[-1, 1].set_xlabel("Depth Standard Deviation")
+        axs[0, 1].set_title("Mean Pixel Depth Standard Deviation")
+        fig.tight_layout()
+        return {
+            'pixel_depths': pixel_depths,
+            'fig': fig,
+            'axs': axs
+        }
 
 def main(args):
     sg = SceneGenerator(args.ckpt, sensor_info_path=args.sensor_info_path)
@@ -425,9 +603,30 @@ def main(args):
     with open(args.video_data_path, 'rb') as f:
         video_data = pickle.load(f)
 
+    data_dict = {'img_multi': img_multi, 'img_test': img_test, 'video_data': video_data, 'data': data}
+
+    job = {
+        'analyze-depth': depth_job,
+        'scene': scene_job,
+        'None': lambda _: None,
+    }[args.job]
+
+    res = job(sg, args, data_dict)
+
     breakpoint()
     return
 
+def depth_job(sg, args, data):
+    return sg.analyze_depth(
+        maxlen=args.depth_maxlen,
+        batch_size=16,
+        num_pixels=args.depth_num_pixels,
+        bootstrap_samples=args.depth_bootstrap_samples,
+        start_frame=args.depth_start_frame
+    )
+
+def scene_job(sg, args, data):
+    return sg.scene(data['img_multi'], separate=False)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -437,6 +636,12 @@ if __name__ == "__main__":
     parser.add_argument("--video-data-path", type=str, default='data_dump.p')
     parser.add_argument('--sensor-info-path', type=str, default='sensor_info.p')
     parser.add_argument("--dryrun", action="store_true", default=False, help="Do not automatically load SAM and segment images")
+    parser.add_argument("--job", default=None)
+    depth_group = parser.add_argument_group("depth job")
+    depth_group.add_argument("--depth-maxlen", type=int, default=100)
+    depth_group.add_argument("--depth-num-pixels", type=int, default=512)
+    depth_group.add_argument("--depth-bootstrap-samples", type=int, default=1000)
+    depth_group.add_argument("--depth-start-frame", type=int, default=0)
 
     args = parser.parse_args()
     main(args)
