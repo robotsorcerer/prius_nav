@@ -28,7 +28,7 @@ rosrun exploratorio landmarker.py
 
 ## Point Cloud Generation
 First, you must download the pretrained models for image segmentation (Segment
-Anything) and depth prediction (SfM). Download the file `models/sg_data.tar` from
+Anything) and depth prediction (SfM and vision transformer). Download the file `models/sg_data.tar` from
 the OneDrive, place it in the workspace root, and extract it.
 
 Next, install the python dependencies listed in `exploratorio/scene_generation_requirements.txt`.
@@ -61,12 +61,72 @@ You can use `sg.scene(imgs)` called with
 a dictionary of images (like `img_multi`) to generate the pointcloud estimated from the camera
 observations, which will appear in an interactive visualizer. Press `q` within the visualizer
 to quit. You can also use `sg.scene_anim(imgs)`
-called with a dictionary of images (like `img_multi`) to generate a animation of the rendered
+called with a dictionary of images (like `img_multi`) to generate an animation of the rendered
 pointcloud, which will be saved to `scene.gif`.
 
 To simply generate a pointcloud without visualizing it, run `sg.multi_masked_pointcloud(imgs)` for a
 dictionary of images (like `img_multi`). This returns a list of pointclouds (one for each camera).
 The points are positioned relative to the car's local frame.
+
+### Depth Estimation and Scene Generation Jobs
+
+There is also a number of predefined jobs for convenience. These are specified with the `--job`
+flag to `scene_generator.py`. These are described briefly below.
+
+#### Depth Estimation Analysis
+
+```bash
+rosrun exploratorio scene_generator.py --job analyze-depth \
+    [--depth-maxlen N1] [--depth-start-frame N2] [--depth-num-pixels N3] [--depth-bootstrap-samples N4]
+```
+
+Evaluates the robustness of pixelwise depth estimates in the presence of observation noise.
+This involves two experiments:
+
+1. For a bunch of randomly chosen pixels, estimate the depth prediction at those
+   pixels over some time horizon where the camera is held fixed. Plot the evolution
+   of depth estimates for the pixel with the largest variance over the horizon.
+2. Use bootstrapping to estimate the distribution over depth standard deviations over
+   the horizon.
+
+Here, the arguments `N1`, `N2`, `N3`, and `N4` are all integers:
+- `N1` is the length of the time horizon over which to compute depth predictions;
+- `N2` is the time index for the first frame to start computing depth predictions;
+- `N3` is the number of random pixel coordinates at which the depth will be evaluated;
+- `N4` is the number of bootstrap samples for estimating the posterior standard deviation.
+
+#### Scene Rendering (Interactive)
+
+```bash
+rosrun exploratorio scene_generator.py --job scene \
+    [--scene-mesh] [--no-landmarks]
+```
+
+Generates 3D scene from camera images, and displays the 3D scene in an interactive visualizer.
+
+The `--scene-mesh` flag triggers mesh rendering. When `--no-landmarks` is specified, the landmark
+frames will not be rendered.
+
+#### Scene Animation
+
+```bash
+rosrun exploratorio scene_generator.py --job scene-anim \
+    [--scene-frames N] [--scene-mesh] [--no-landmarks]
+```
+
+Generates 3D scene from camera images, and generates a gif animation of the scene.
+
+The `--scene-mesh` flag triggers mesh rendering. When `--no-landmarks` is specified, the landmark
+frames will not be rendered. The integer `N` specifies how many frames to generate in the gif.
+
+#### Pointcloud Streaming
+
+```bash
+rosrun exploratorio scene_generator.py --job stream-scene
+```
+
+Infers landmark positions and pointclouds from camera images, and publishes the landmark pointclouds
+to the `/landmark_pointcloud` topic.
 
 ## Online Replay Buffer
 After having launched the `car_demo` as outlined above,
